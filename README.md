@@ -237,4 +237,4 @@ Then add it to the `create_provider()` factory.
 
 ## License
 
-MIT — fork it, run it, improve it.
+GPL-3.0 — use, modify, and distribute under the same license. See [LICENSE](LICENSE).
