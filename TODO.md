@@ -1,0 +1,449 @@
+# GeoPulse Roadmap
+
+Each item includes implementation notes ("note to self") for context continuity across sessions.
+Items marked **ASK USER** need a decision before implementation.
+
+---
+
+## Reliability & Hardening
+
+- **Fix source reliability**
+Reuters DNS fails, AP feed won't parse. Currently only BBC and Al Jazeera work out of 4
+tier-1 sources.
+*Implementation:* Add 10-15 sources to `data/sources.yaml`. Add retry logic (3 attempts
+with backoff) in `scraping/fetchers.py`. Add per-source error counting in the DB and
+a `last_error` / `last_success` timestamp. Skip sources that have failed 5+ times in a
+row until the next full cycle.
+*Files:* `data/sources.yaml`, `scraping/fetchers.py`, `storage/database.py`
+- **Robust LLM prompt parsing**
+If the model doesn't produce exact `<<<MARKERS>>>`, all fields come back empty. This
+happened in practice when user selected StarCoder2:15B (a code model).
+*Implementation:* In `analysis/briefing.py` `parse_briefing_response()`, add a fallback
+chain: (1) try current marker parsing, (2) try JSON block extraction, (3) try markdown
+header extraction (`## HEADLINE`, `## SUMMARY`), (4) regex for common patterns,
+(5) last resort: use first line as headline, rest as summary.
+**ASK USER:** Should we also validate the selected model before generation? (e.g. warn
+if a known code-only model is selected)
+*Files:* `analysis/briefing.py`
+- **Article deduplication**
+BBC and Al Jazeera both cover the same stories. LLM gets fed duplicates, wastes tokens.
+*Implementation:* Before passing articles to briefing generation, deduplicate by fuzzy
+title matching (difflib.SequenceMatcher, threshold ~0.7). Group similar articles, keep
+the one with the longest full_text. Pass the group's source names to the briefing so
+"Sources: BBC, Al Jazeera, Reuters" still shows corroboration.
+**ASK USER:** Should dedup happen at ingest time (fewer DB rows) or at briefing generation
+time (keep all articles, just cluster them)? Ingest-time is simpler, generation-time
+preserves raw data.
+*Files:* `scraping/scheduler.py`, possibly new `analysis/dedup.py`
+- **Database migration framework**
+SQLite migrations have broken twice (body NOT NULL, FK corruption). Guessing schema from
+column names is fragile.
+*Implementation:* Add a `schema_version` table with a single integer. Each migration is
+a numbered function. On startup, run all migrations > current version sequentially.
+Wrap each in a transaction. Always use `PRAGMA legacy_alter_table = ON` for renames.
+*Files:* `storage/database.py`
+- **Automated tests**
+No tests exist. Migrations, parser, and scraping have all had bugs.
+*Implementation:* Use pytest. Priority test targets: (1) `_migrate()` on a fresh DB,
+(2) `_migrate()` on an old-schema DB, (3) `parse_briefing_response()` with good/bad/empty
+input, (4) `insert_article` / `insert_briefing` round-trip, (5) `score_severity` keywords.
+Use an in-memory SQLite DB for speed.
+*Files:* new `tests/` directory
+- **Parallel scraping with rate limiting**
+Sources are fetched serially. With 15+ sources this will be slow.
+*Implementation:* Use `concurrent.futures.ThreadPoolExecutor(max_workers=4)` in
+`scraping/fetchers.py`. Add a per-domain rate limiter (min 2s between requests to
+same domain). This is straightforward — the fetcher functions are already stateless.
+*Files:* `scraping/fetchers.py`
+- **Source health dashboard in settings**
+Users can't see which sources work and which are broken.
+*Implementation:* Add a `source_health` table (source_name, last_check, last_success,
+last_error, error_count, article_count). Update on each fetch. Add a new settings page
+tab showing a list of sources with green/yellow/red status indicators.
+*Files:* `storage/database.py`, `scraping/fetchers.py`, `ui/settings_dialog.py`
+- **Move model selector and briefing depth to settings**
+User requested: remove depth dropdown from header bar. Model dropdown stays in header.
+Depth becomes a default preference in Settings > AI Engine.
+*Implementation:* Remove depth_box from header bar in `_build_ui()`. Add an
+`Adw.ComboRow` for depth in `_build_ai_page()` of settings_dialog.py.
+*Files:* `ui/window.py`, `ui/settings_dialog.py`
+- **Briefing card right-click / action menu**
+User wants: click card to get options like "regenerate", "add depth", "find more info",
+"delete card".
+*Implementation:* Add a `Gtk.PopoverMenu` on right-click or long-press of `BriefingRow`.
+Actions: Regenerate (re-run briefing generation with same articles), Go Deeper (regenerate
+with extended depth), Find More (trigger targeted search), Delete, Mark Unread.
+*Files:* `ui/window.py`, `scraping/scheduler.py` (needs a regenerate-by-id method)
+- **Tags fully visible in briefing cards**  
+Tags get clipped by sidebar width. Cards need dynamic height.  
+*Note:* Already removed `min-height: 72px` from CSS. If tags still clip, the `tag_box`  
+may need `set_wrap(True)` via a `Gtk.FlowBox` instead of `Gtk.Box`, or limit to  
+displaying only the primary topic with a tooltip showing all.  
+**ASK USER:** Prefer wrapping tags (taller cards) or show 1 tag + tooltip?  
+*Files:* `ui/window.py`, `ui/style.css`
+- **Make sure a user cant spam update**, dont put too much pressure on the sites by scraping too often. - Figure out how much scraping is ok.
+- **Data retention: prevent app data from overflowing**
+  App data that can grow unbounded:
+  1. **Briefings** — one row per card; `summary`, `developments`, `context`, etc. can be large.
+     **Setting:** "Keep last X briefings" (e.g. 50, 100, 200, 500, or "Unlimited"). Delete
+     older briefings (oldest first). Run cleanup after each scheduler cycle or once per day.
+  2. **Articles** — every scraped article; `full_text` is the main bloat. Can be hundreds per
+     day. **Setting:** "Keep articles for X days" (e.g. 30, 60, 90). Delete articles with
+     `fetched_at` older than that. Keep at least 7 days so "recent" and briefing view
+     sources still work. When deleting briefings, we don't delete articles (they're
+     shared); article retention is purely age-based.
+  3. **Conversations** — chat history per briefing; `messages` JSON. When a briefing is
+     deleted, delete its conversations (cascade or explicit DELETE WHERE briefing_id
+     NOT IN (kept briefing ids)). No separate cap needed if briefings are capped.
+  4. **user_topics** — small, fixed; no retention needed.
+  5. **Config** — single YAML file; negligible.
+  6. **Logs** — currently stderr only; no log file. If file logging is added later, use
+     rotation or max size so logs don't grow forever.
+
+  *Implementation:* Add to Settings > new "Data" or "Storage" page: (1) Spin or combo
+  "Keep last N briefings" (default 100; 0 or -1 = unlimited). (2) Spin "Keep articles for
+  N days" (default 90). Store in config e.g. `retention: { max_briefings: 100,
+  article_days: 90 }`. In scheduler (or a periodic task), after each cycle: (a) count
+  briefings, if over cap delete oldest; (b) delete conversations whose briefing_id
+  was removed; (c) delete articles where fetched_at < (now - article_days). Run
+  VACUUM occasionally (e.g. weekly) to reclaim SQLite disk space after deletes.
+  *Files:* `storage/config.py`, `storage/database.py` (new functions: delete_old_briefings,
+  delete_old_articles, delete_orphan_conversations), `ui/settings_dialog.py`, `scraping/scheduler.py`.
+
+---
+
+## New Features
+
+- **Event-based briefing generation (one card per event, not one card per roundup)**
+  **Problem:** Currently one briefing card = one LLM call that aggregates ALL relevant
+  recent articles into a single "news roundup". Result: Ukraine + Iran + Pakistan–Afghanistan
+  mixed in one card. User wants **source aggregation per event** — each distinct event gets
+  its own card, with all sources covering that event aggregated into that card only.
+
+  *Pipeline change:*
+  1. **Event clustering (new step before briefing gen):** From the pool of recent articles,
+     group them into distinct events. E.g. cluster A = Ukraine escalation, cluster B = Iran
+     regional conflict, cluster C = Pakistan–Afghanistan. Each cluster = one event = one
+     future briefing card.
+  2. **One briefing per event:** For each cluster, call `generate_briefing(articles_in_cluster, ...)`.
+     No mixing of events in a single card.
+  3. **Cap new cards per cycle:** Max 6 new briefing cards per update run (or per hour —
+     see below). Prevents UI flood and limits LLM/GPU load. Pick the 6 events by e.g.
+     highest severity, or most sources, or both (score = severity × log(source_count)).
+
+  *Clustering approaches (choose one or combine):*
+  - **A. LLM-based:** One lightweight LLM call: "Given these article titles/summaries,
+    group them into distinct news events. Return event labels and article IDs per event."
+    Accurate but adds latency and token cost per cycle.
+  - **B. Entity/region keywords:** Extract primary region or entity from each article
+    (country names, conflict names in title/summary). Cluster by (primary_region, primary_entity).
+    E.g. Ukraine+Russia → one cluster, Iran+Israel → another, Pakistan+Afghanistan → another.
+    Can use a simple keyword list or NER if available.
+  - **C. Embedding similarity:** Embed title+summary, cluster by cosine similarity
+    (e.g. sklearn or sentence-transformers). Events = clusters. No LLM for clustering;
+    needs local embedding model or API.
+  - **D. Topic + geography hybrid:** Use existing topic tags plus a small "region" tag
+    (e.g. from keywords: Ukraine, Middle East, South Asia). Cluster by (primary_topic,
+    region). Fewer clusters than raw topics, cleaner than geography alone.
+
+  *Recommendation:* Start with B or D for no extra LLM cost; add A or C later for
+  better separation of closely related events (e.g. two different Iran stories).
+
+  *Config:* Add `max_briefings_per_cycle` (default 6). Optionally `max_briefings_per_hour`
+  (e.g. 6) to cap total new cards per hour across multiple runs — requires counting
+  briefings created in the last 60 minutes.
+
+  **ASK USER:** Prefer cap per run (6 per scheduler cycle) or per hour (6 per hour total)?
+  Per run is simpler; per hour avoids burst after downtime.
+
+  *Interaction with threaded updates:* When we add story-update tracking, "update"
+  detection is per-event: new articles that cluster into an existing event get appended
+  as an update to that event’s card; only articles that form a NEW cluster create a
+  new card (subject to the same cap).
+
+  *Files:* `analysis/event_clustering.py` (new), `scraping/scheduler.py` (replace
+  single `_do_generate_briefing` call with: cluster → for each cluster up to cap,
+  generate one briefing), `storage/config.py` (max_briefings_per_cycle, optional
+  max_briefings_per_hour), `storage/database.py` (optional: store event_id or
+  cluster fingerprint on briefing for update matching).
+
+- **Resource-aware deferral (skip local model when system is busy; generate later)**
+  When the user is gaming, using the GPU heavily, or doing resource-heavy work, don’t
+  load/use the local Ollama model for the current news run. Still run the scrape and
+  save/aggregate articles; defer briefing generation until the system is idle again.
+  **Only when provider is local (Ollama).** If provider is cloud API, ignore — no
+  local resource impact.
+
+  *Detection (local Ollama only):*
+  - **GPU:** We already have `gpu_stats` (compute %, VRAM used). Thresholds: e.g. if
+    compute > 70% for 2+ minutes, or VRAM used > 80% of total, treat as "busy".
+  - **Optional:** Fullscreen app (game) detection via X11/Wayland (e.g. check active
+    window or fullscreen state). More invasive; make it optional in settings.
+  - **Optional:** CPU load or "idle time" from system (e.g. `/proc/loadavg`, or
+    DBus/LoginManager idle). High load or low idle = defer.
+
+  *Behavior:*
+  1. Each scheduler cycle: run scrape + ingest as now (no GPU needed).
+  2. Before calling the LLM for briefing generation: if local Ollama and "system busy"
+     → skip generation this cycle. Store nothing extra; articles are already in DB.
+  3. "Generate later": either (a) next cycle re-checks and runs generation if not busy,
+     or (b) a separate idle check (e.g. every 5 min) that runs pending generation when
+     busy flag clears. Option (a) is simpler (next cycle will pick up the same articles
+     via get_recent_articles); no need for a "pending generation" queue unless we want
+     to avoid re-clustering. Option (b) needs a "deferred_run" flag or queue so we don’t
+     double-generate. Prefer (a) for v1: just skip this cycle; next cycle will see
+     the same articles and generate then (possibly with more articles).
+  4. Config: `defer_when_busy` (default true), optional thresholds in settings.
+
+  *Model lifecycle — load on demand vs keep warm:*
+  User asked: should the local model be loaded only when a briefing is being generated,
+  then unloaded until next time?
+  - **Load on demand:** Don’t preload the GeoPulse model at app startup. When we’re
+    about to run briefing generation, we call the API; Ollama loads the model on first
+    request. So model is only in VRAM during/after generation until something else
+    evicts it or the user switches model.
+  - **Unload after generation:** Ollama doesn’t have a formal "unload model" API; models
+    stay in VRAM until replaced. To "free" VRAM we could: (1) do nothing — model stays
+    loaded (current behavior), (2) trigger load of a tiny model to evict the big one
+    (hacky), (3) if Ollama adds an unload endpoint, use it. For now, document: "load on
+    demand" = we never explicitly preload; we just run generation when the scheduler
+    says so, and Ollama loads as needed. After generation we don’t actively unload;
+    the model may stay warm. That’s fine for "don’t load when user is gaming" because
+    we’re not running generation when busy anyway.
+  - **Verdict:** Yes, load-on-demand (no preload, run generation only when we’re about
+    to create cards) is a good idea. It pairs with defer-when-busy: we only run
+    generation when not busy, and we don’t load the model until that moment. No need
+    to implement explicit "unload" unless Ollama gains support; the main win is
+    deferring generation when the system is under load.
+
+  *Files:* `gpu_stats.py` (already exists; add or use for busy check), new
+  `analysis/system_load.py` or inline in scheduler (busy detection), `scraping/scheduler.py`
+  (check busy before _do_generate_briefing; skip and continue if local + busy),
+  `storage/config.py` (defer_when_busy, gpu_busy_threshold_pct, gpu_vram_busy_threshold_pct).
+
+- **Story update tracking (threaded updates) — Option C**
+When new articles arrive about a story that already has a briefing, DON'T create a new
+briefing. Instead, append a timestamped update to the existing one.
+*How it works:*
+
+1. **Detection:** After ingesting new articles, compare each against existing briefings
+  from the last 24h using fuzzy title matching (difflib, threshold ~0.6) and overlapping
+   topic tags. If >60% match, it's an update to an existing story.
+2. **DB schema:** Add `updates` column (JSON array) to briefings table. Each entry:
+  `{"timestamp": "...", "new_articles": [...], "delta_summary": "...", "severity_change": 0}`
+3. **LLM call:** When an update is detected, send a shorter prompt: "Given this original
+  briefing and these new articles, what changed? Summarize the update in 2-3 paragraphs."
+   Don't regenerate the whole briefing — just produce the delta.
+4. **Briefing card:** Show an "UPDATED · 2 updates" badge on the sidebar card (new CSS
+  class `briefing-update-badge`). Card stays in its original position but gets bumped
+   to top of list on update.
+5. **Briefing view:** Add an "Updates" section at the bottom (above the ask bar) with
+  a timeline: each update has a timestamp header and the delta summary. Original analysis
+   stays intact above.
+6. **Notification:** Fire `notify-send` when: (a) severity increased, (b) more than 3
+  new sources corroborate, or (c) a new actor/development appeared.
+7. **Refresh of top summary:** Re-generate ONLY the top-line summary to reflect the
+  latest state. The rest of the briefing (developments, context, actors) is preserved
+   as the original analysis. Updates section has the new info.
+
+*Files:* `storage/database.py` (schema + migration), `scraping/scheduler.py` (detection
+logic), `analysis/briefing.py` (update prompt template), `ui/window.py` (badge),
+`ui/briefing_view.py` (updates timeline), `ui/style.css` (badge styling)
+**ASK USER:** Should the summary refresh be automatic or require user to click
+"Refresh summary"? Auto is smoother but uses more GPU time.
+
+- **News category tabs**
+Sidebar tabs for different news domains: Geopolitics (default), AI & Tech, Local News,
+Economics, etc. Each tab has its own sources, topics, and briefing stream.
+*Implementation:*
+
+1. Add a `categories` table: id, name, icon, sort_order.
+2. Link sources and topics to categories (many-to-many via junction tables, or a
+  `category_id` FK on sources and user_topics).
+3. Briefings get a `category_id` FK.
+4. Sidebar gets a tab strip or `Gtk.StackSwitcher` above the briefing list. Switching
+  tabs filters the briefing list and changes which sources/topics are active.
+5. Scheduler runs separate cycles per category (or one cycle that routes articles to
+  the right category based on source).
+6. Default categories seeded on first run: "Geopolitics", "AI & Technology".
+  User can add/rename/remove in settings.
+
+**ASK USER:** Should each category have independent scraping intervals, or share the
+global schedule? Independent is more flexible but more complex.
+*Files:* `storage/database.py`, `data/sources.yaml` (add category field), `ui/window.py`,
+`ui/settings_dialog.py`, `scraping/scheduler.py`
+
+- **Source manager in settings**
+Full source browser with tier assignment (Tier 1: sentinel, Tier 2: context/analysis).
+*Implementation:* New settings page tab. Show all sources from `data/sources.yaml` plus
+user-added custom sources. Each row: name, URL, tier dropdown (1/2/3), category dropdown,
+enabled toggle, health indicator (green/red dot). "Add Source" row at bottom with URL
+entry + auto-detect (try RSS parsing the URL). Store custom sources in DB, merge with
+built-in sources at runtime.
+*Files:* `ui/settings_dialog.py`, `storage/database.py`, `scraping/fetchers.py`
+- **"Go deeper" regeneration button**
+Replace the header bar depth dropdown. In the briefing view, replace "Read full analysis..."
+with a "Go Deeper" button that re-generates the briefing with extended depth.
+*Implementation:*
+
+1. Remove depth dropdown from `_build_ui()` in window.py.
+2. Add `Adw.ComboRow` for default depth in settings AI Engine page.
+3. In `briefing_view.py`, replace the `read_more_btn` with a "Go Deeper" button.
+  On click: (a) show spinner, (b) fetch the original articles by `article_ids`,
+   (c) re-run `generate_briefing()` with depth="extended", (d) update the briefing
+   in DB, (e) reload the view.
+4. The original "brief" content is replaced. If user wants to preserve history,
+  combine with threaded updates (store the original as an "initial analysis" entry).
+
+*Files:* `ui/window.py`, `ui/briefing_view.py`, `ui/settings_dialog.py`,
+`scraping/scheduler.py` (needs a `regenerate_briefing(briefing_id, depth)` method)
+
+- **Remote Ollama connection**
+Allow connecting to an Ollama instance on another machine (LAN or remote).
+*Implementation:* The code already supports arbitrary `base_url` in config. Just need:
+(1) Add a URL entry row in Settings > AI Engine for Ollama URL (default localhost:11434).
+(2) Add a "Test Connection" button next to it. (3) Update AI indicator to show
+"Remote" label when URL is not localhost. (4) Validate on save.
+*Note:* This is mostly UI work. The `OllamaManager`, `OllamaProvider`, and `create_provider`
+all already use `base_url` from config.
+*Files:* `ui/settings_dialog.py`, `storage/config.py`
+- **Export briefings**
+Save/share as markdown, PDF, or plain text. Copy to clipboard.
+*Implementation:* Add export button (or menu) to briefing_view.py header area.
+Markdown is trivial (format fields into md). Plain text: strip formatting. PDF: use
+`weasyprint` or `reportlab`. Clipboard: `Gdk.Clipboard`.
+*Files:* `ui/briefing_view.py`, new `export.py`
+- **Expert commentary (on demand): YouTube transcripts**
+  When the user asks for "expert commentary" or similar, pull in YouTube video
+  transcriptions (e.g. William Spaniel, Peter Zeihan, CFR, Chatham House, university
+  lectures) as additional sources. Add source type `youtube_channel` / `youtube_playlist`:
+  discover new videos via YouTube Data API or channel RSS, fetch transcript via
+  `youtube-transcript-api` (or equivalent), normalize to article format (title, full_text
+  = transcript, source_name = channel, url = video link). Run through same pipeline so
+  the briefing can cite e.g. "William Spaniel, Game Theory 101, [video title]".
+  Only used when user explicitly requests expert/deeper commentary. Respect YouTube
+  ToS and rate limits; transcripts not always available.
+  *Files:* `data/sources.yaml` (source type), `scraping/fetchers.py` (YouTube fetcher),
+  `storage/database.py` (if needed for source type), briefing prompt logic to include
+  expert sources when requested.
+- **Expert commentary (on demand): think tanks, podcasts, historical context**
+  When the user asks for "expert commentary", optionally pull in: (1) think tank
+  reports/briefs (CFR, Chatham House, RAND, Brookings, Carnegie, Wilson Center —
+  RSS or scrape), (2) podcasts with transcripts (War on the Rocks, Lawfare, Rational
+  Security, etc.), (3) historical context via RAG over Wikipedia/Britannica or
+  curated history briefs per region/topic. Label these as "expert" sources so the
+  briefing can highlight or prefer them when generating. No dedicated "history AI"
+  — use the same model with retrieved historical snippets injected into the prompt.
+  Only used when user explicitly requests expert commentary.
+  *Files:* `scraping/fetchers.py` (think tank / podcast sources), optional
+  `analysis/retrieval.py` (RAG for history), `data/sources.yaml`, briefing prompt
+  and config flag for "include expert/history sources".
+- **Add a political leaning feature.** Much like blind spot for ground.news. If a user selects they are` leaning left (add scale?) then generate logical articles that also lean towards explaining consequenses, especially in relation to history and to established law. Ovmerride their leanings. - for right leaning, generate unbiasedly.
+- **"What did I miss" morning digest**
+Consolidate overnight briefings into a single summary on app open.
+*Implementation:* On app activate, check time since last user interaction. If >6 hours,
+gather all briefings created since then and generate a digest summary via LLM.
+Show as a special "digest" briefing card at the top.
+*Files:* `ui/window.py`, `analysis/briefing.py` (digest prompt template)
+- **AI-powered triage**
+Replace keyword-based `score_severity` with a lightweight LLM call.
+*Implementation:* Send article title + summary to the LLM with a triage-only prompt
+(one-shot, expecting just a number 1-5). Use a tiny/fast model for this. Fall back to
+keyword scoring if LLM is unavailable.
+**ASK USER:** This means every article gets an LLM call at ingest time. Could be 50+
+calls per cycle. Worth the GPU time? Or only for articles that keyword-score >= 2?
+*Files:* `analysis/triage.py`, `scraping/scheduler.py`
+- **Map visualization**
+Geopolitical news is geographic. Region highlight on briefings.
+*Implementation:* Simplest approach: a static SVG world map with regions colorable via
+CSS classes. Extract region/country from articles (LLM or keyword). Highlight relevant
+regions on the briefing view. Could use a `Gtk.Picture` with a dynamically colored SVG.
+*Files:* `ui/briefing_view.py`, new `data/world_map.svg`
+- **Confidence calibration**
+Track AI severity predictions vs actual developments over time.
+*Implementation:* Long-term feature. Store predictions, let user rate accuracy
+retrospectively. Build a calibration curve over weeks of data.
+*Files:* `storage/database.py`, new `analysis/calibration.py`
+- **JavaScript-rendered scraping**
+Many modern news sites need JS to render content.
+*Implementation:* Integrate Playwright as an optional scraper backend. Use it only for
+sources flagged as `needs_js: true` in sources.yaml. Fall back to requests+BS4 if
+Playwright not installed.
+**ASK USER:** Playwright is a heavy dependency (~150MB). Make it optional (extras_require)?
+*Files:* `scraping/fetchers.py`, `data/sources.yaml`, `requirements.txt`
+- **Briefing history search**
+Full-text search across past briefings.
+*Implementation:* SQLite FTS5 virtual table mirroring briefings content. Rebuild index
+on insert. Add search bar to sidebar. Results shown as filtered briefing list.
+*Files:* `storage/database.py`, `ui/window.py`
+- **Desktop notifications with actions**
+Click notification to open the specific briefing.
+*Implementation:* Pass `--action` to notify-send or use GIO notification API
+(`Gio.Notification`) which supports actions natively with `Gio.Application`.
+On action, launch app with `--briefing <ID>` (already supported in CLI args).
+*Files:* `scraping/scheduler.py`, `ui/app.py`
+
+---
+
+## Architecture — Backend API Extraction
+
+This is the key architectural step that unlocks cross-platform apps, remote access, and mobile.
+Do this AFTER the core features above are stable.
+
+- **Extract Python backend into a local REST API** (FastAPI)
+*Implementation:*
+
+1. New `api/` package with FastAPI app.
+2. Endpoints: `GET/POST /briefings`, `GET /articles`, `POST /chat`, `GET/PUT /config`,
+  `GET /status` (scheduler state, model info, GPU stats), `GET /models`.
+3. WebSocket `/ws/events` for real-time push: new briefing, status change, update badge.
+4. The GTK4 app talks to this API instead of importing storage/scraping directly.
+5. `main.py` gains a `--serve` flag to run headless (API only, no GUI).
+6. For backwards compat, the GTK app can still import directly if API isn't running
+  (single-process mode).
+
+*Files:* new `api/` package, `main.py`, refactor `ui/window.py` to use API client
+
+- **Authentication for remote access**
+Token-based auth when the API is exposed beyond localhost.
+*Implementation:* Generate a random token on first run, store in config. API checks
+`Authorization: Bearer <token>` header. Settings shows the token for copying to
+remote clients. Optional: mTLS for serious deployments.
+*Files:* `api/auth.py`, `storage/config.py`
+
+---
+
+## Platform Expansion (Paid)
+
+Strategy: Linux stays free (GTK4, open source). Other platforms get native paid apps
+sharing the same Python backend API.
+
+- **Tauri desktop app (Windows + macOS)**
+Rust shell + Svelte/React web UI. Native window chrome, system tray, auto-updates.
+Single codebase covers both platforms. Talks to the Python backend API (bundled or remote).
+Distribute via website + potentially Microsoft Store / Mac App Store.
+Charges: one-time purchase ($15-25 range) or yearly license.
+*Note:* The Python backend can be bundled as a sidecar process via PyInstaller/Nuitka.
+Tauri has built-in sidecar support.
+- **Mobile app (iOS + Android)**
+Flutter or React Native. Connects to a GeoPulse server running on user's home machine
+(or future hosted service). Push notifications for breaking briefings.
+Subscription model ($3-5/month).
+*Note:* Requires the backend API extraction to be complete first. The mobile app is
+a thin client — all scraping and LLM work happens on the server.
+- **GeoPulse Cloud (future SaaS)**
+Hosted scraping + API-based LLM analysis. No local setup required.
+Free tier (limited briefings/day) + paid tier (unlimited, priority).
+This is the long-term monetization play.
+
+---
+
+## Licensing
+
+Current recommendation: **GPLv3** for the Linux/core version.
+
+- Keeps it open source, builds community
+- GPLv3 copyleft means competitors can't close-source your work
+- Paid platform apps can use the same backend (you own the copyright)
+- Cloud service is a natural upsell
+

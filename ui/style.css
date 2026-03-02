@@ -1,0 +1,215 @@
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+.sidebar-list {
+    background: transparent;
+}
+.sidebar-list row {
+    border-radius: 6px;
+    margin: 2px 4px;
+    padding: 0;
+}
+.sidebar-list row:selected {
+    background: alpha(@accent_color, 0.2);
+}
+
+/* Sidebar row typography */
+.sidebar-title-unread {
+    font-weight: 700;
+}
+.sidebar-meta {
+    font-size: 0.72em;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    opacity: 0.65;
+}
+
+/* ── Severity colors ────────────────────────────────────────────────────── */
+
+/* Sidebar left bar (4px colored strip) */
+.sev-bar-1 { background: #4CAF50; }  /* routine: green */
+.sev-bar-2 { background: #2196F3; }  /* low: blue */
+.sev-bar-3 { background: #FFC107; }  /* moderate: amber */
+.sev-bar-4 { background: #FF9800; }  /* high: orange */
+.sev-bar-5 { background: #F44336; }  /* critical: red */
+
+/* Sidebar meta text color */
+.sev-text-1 { color: #81C784; }
+.sev-text-2 { color: #64B5F6; }
+.sev-text-3 { color: #FFD54F; }
+.sev-text-4 { color: #FFB74D; }
+.sev-text-5 { color: #EF5350; }
+
+/* Badge pills (used in briefing detail view) */
+.severity-badge {
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 0.68em;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    min-width: 0;
+}
+.sev-1 { background: #2E7D32; color: #C8E6C9; }
+.sev-2 { background: #1565C0; color: #BBDEFB; }
+.sev-3 { background: #F57F17; color: #FFF9C4; }
+.sev-4 { background: #E65100; color: #FFE0B2; }
+.sev-5 { background: #B71C1C; color: #FFCDD2; border: 1px solid #EF5350; }
+
+/* ── Confidence ─────────────────────────────────────────────────────────── */
+.conf-low    { opacity: 0.6; }
+.conf-medium { opacity: 0.8; }
+.conf-high   { opacity: 1.0; }
+
+/* ── Briefing content ───────────────────────────────────────────────────── */
+.briefing-headline {
+    font-size: 1.25em;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+}
+.briefing-summary {
+    font-size: 0.95em;
+    line-height: 1.6;
+    opacity: 0.9;
+}
+.section-header {
+    font-size: 0.7em;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    opacity: 0.45;
+    margin-top: 4px;
+}
+.body-text {
+    font-size: 0.94em;
+    line-height: 1.7;
+}
+
+/* ── Topic tags on briefing cards ──────────────────────────────────────── */
+.briefing-topic-tag {
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 0.68em;
+    font-weight: 600;
+    border: 1px solid alpha(@accent_color, 0.35);
+    background: alpha(@accent_color, 0.08);
+    opacity: 0.75;
+}
+.briefing-topic-tag-more {
+    font-size: 0.66em;
+    font-weight: 600;
+    opacity: 0.45;
+}
+
+/* ── Source chips (link buttons) ────────────────────────────────────────── */
+.source-chip-btn {
+    border-radius: 20px;
+    padding: 2px 9px;
+    font-size: 0.77em;
+    min-height: 0;
+}
+
+/* ── Action buttons ─────────────────────────────────────────────────────── */
+.suggested-q-btn {
+    border-radius: 16px;
+    padding: 5px 12px;
+    font-size: 0.83em;
+    border: 1px solid alpha(@accent_color, 0.5);
+    background: alpha(@accent_color, 0.07);
+}
+.suggested-q-btn:hover {
+    background: alpha(@accent_color, 0.18);
+    border-color: @accent_color;
+}
+.search-btn {
+    border-radius: 20px;
+    padding: 8px 20px;
+    font-size: 0.95em;
+}
+
+/* ── Ask bar ────────────────────────────────────────────────────────────── */
+.ask-bar {
+    border-top: 1px solid alpha(@borders, 0.4);
+    padding-top: 6px;
+}
+
+/* ── Chat bubbles ───────────────────────────────────────────────────────── */
+.chat-user-bubble {
+    background: alpha(@accent_color, 0.18);
+    border-radius: 14px 14px 3px 14px;
+    padding: 9px 13px;
+}
+.chat-ai-bubble {
+    background: alpha(white, 0.06);
+    border-radius: 14px 14px 14px 3px;
+    padding: 9px 13px;
+}
+.chat-role-label {
+    font-size: 0.72em;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    opacity: 0.5;
+    margin-bottom: 2px;
+}
+
+/* ── Misc ───────────────────────────────────────────────────────────────── */
+.unread-dot {
+    min-width: 8px;
+    min-height: 8px;
+    border-radius: 50%;
+    background: @accent_color;
+}
+.meta-label {
+    font-size: 0.8em;
+    opacity: 0.55;
+}
+.breaking-bar {
+    background: #B71C1C;
+    padding: 4px 12px;
+    border-radius: 0;
+}
+.breaking-label {
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    font-size: 0.78em;
+    color: white;
+}
+.watch-indicator {
+    font-size: 0.88em;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: alpha(@warning_color, 0.1);
+    border: 1px solid alpha(@warning_color, 0.3);
+}
+.quiet-subtitle {
+    font-size: 0.9em;
+    opacity: 0.6;
+}
+.welcome-desc {
+    font-size: 1.0em;
+    opacity: 0.75;
+    line-height: 1.6;
+}
+.model-desc {
+    font-size: 0.85em;
+    opacity: 0.6;
+}
+
+/* ── AI indicator dot ───────────────────────────────────────────────────── */
+.ollama-indicator {
+    font-size: 0.8em;
+    font-weight: 600;
+}
+.gpu-indicator {
+    font-size: 0.72em;
+    opacity: 0.55;
+    font-variant-numeric: tabular-nums;
+}
+.ai-dot-idle    { opacity: 0.3; color: @window_fg_color; }
+.ai-dot-online  { color: #4CAF50; }
+.ai-dot-offline { color: #9E9E9E; }
+.ai-dot-thinking {
+    color: #64B5F6;
+    animation: ai-blink 0.7s ease-in-out infinite alternate;
+}
+@keyframes ai-blink {
+    from { opacity: 1.0; }
+    to   { opacity: 0.2; }
+}

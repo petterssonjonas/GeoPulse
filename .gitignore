@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+.Python
+
+# App data (local, not in repo)
+*.db
+*.db-wal
+*.db-shm
+
+# Config may contain API keys — optional: uncomment to ignore
+# .config/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Logs
+*.log

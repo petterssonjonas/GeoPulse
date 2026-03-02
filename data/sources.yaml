@@ -1,0 +1,154 @@
+# Tier 1: Sentinel - checked every 15-30 min for breaking news
+# Tier 2: Context  - checked when tier 1 detects notable activity
+# Tier 3: Official - checked on breaking events (severity >= 4)
+
+sources:
+  # ── TIER 1: SENTINEL ──
+  - name: Reuters World
+    url: https://feeds.reuters.com/reuters/worldNews
+    type: rss
+    tier: 1
+    category: media
+    region: global
+    enabled: true
+
+  - name: BBC World News
+    url: http://feeds.bbci.co.uk/news/world/rss.xml
+    type: rss
+    tier: 1
+    category: media
+    region: global
+    enabled: true
+
+  - name: Al Jazeera
+    url: https://www.aljazeera.com/xml/rss/all.xml
+    type: rss
+    tier: 1
+    category: media
+    region: global
+    enabled: true
+
+  - name: AP News World
+    url: https://apnews.com/rss/apf-intlnews
+    type: rss
+    tier: 1
+    category: media
+    region: global
+    enabled: true
+
+  # ── TIER 2: CONTEXT ──
+  - name: Foreign Policy
+    url: https://foreignpolicy.com/feed/
+    type: rss
+    tier: 2
+    category: analysis
+    region: global
+    enabled: true
+
+  - name: The Economist International
+    url: https://www.economist.com/international/rss.xml
+    type: rss
+    tier: 2
+    category: analysis
+    region: global
+    enabled: true
+
+  - name: Council on Foreign Relations
+    url: https://www.cfr.org/rss.xml
+    type: rss
+    tier: 2
+    category: think_tank
+    region: global
+    enabled: true
+
+  - name: War on the Rocks
+    url: https://warontherocks.com/feed/
+    type: rss
+    tier: 2
+    category: analysis
+    region: global
+    enabled: true
+
+  - name: Bellingcat
+    url: https://www.bellingcat.com/feed/
+    type: rss
+    tier: 2
+    category: investigation
+    region: global
+    enabled: true
+
+  - name: The Diplomat
+    url: https://thediplomat.com/feed/
+    type: rss
+    tier: 2
+    category: analysis
+    region: asia
+    enabled: true
+
+  - name: Middle East Eye
+    url: https://www.middleeasteye.net/rss
+    type: rss
+    tier: 2
+    category: media
+    region: middle_east
+    enabled: true
+
+  # ── TIER 3: OFFICIAL ──
+  - name: United Nations News
+    url: https://news.un.org/feed/subscribe/en/news/all/rss.xml
+    type: rss
+    tier: 3
+    category: official
+    region: global
+    enabled: true
+
+  - name: US State Department
+    url: https://www.state.gov/press-releases/feed/
+    type: rss
+    tier: 3
+    category: official
+    region: us
+    enabled: true
+
+  - name: UK Foreign Office
+    url: https://www.gov.uk/government/organisations/foreign-commonwealth-development-office.atom
+    type: atom
+    tier: 3
+    category: official
+    region: uk
+    enabled: true
+
+  - name: NATO News
+    url: https://www.nato.int/cps/en/natolive/news.rss
+    type: rss
+    tier: 3
+    category: official
+    region: nato
+    enabled: true
+
+  - name: EU External Action Service
+    url: https://www.eeas.europa.eu/eeas/rss_en
+    type: rss
+    tier: 3
+    category: official
+    region: eu
+    enabled: true
+
+  - name: IAEA News
+    url: https://www.iaea.org/feeds/topstories.xml
+    type: rss
+    tier: 3
+    category: official
+    region: global
+    enabled: true
+
+  - name: Chinese MFA Press
+    url: https://www.mfa.gov.cn/eng/
+    type: scrape
+    tier: 3
+    category: official
+    region: china
+    enabled: true
+    scrape_config:
+      article_selector: ".list-news li a, .list_wz li a"
+      base_url: "https://www.mfa.gov.cn"

@@ -1,0 +1,40 @@
+topics:
+  - name: Russia-Ukraine War
+    keywords: [russia, ukraine, crimea, donbas, zelenskyy, kremlin, moscow]
+    pinned: true
+
+  - name: Middle East Conflict
+    keywords: [israel, gaza, hamas, hezbollah, iran, syria, lebanon]
+    pinned: true
+
+  - name: China-Taiwan
+    keywords: [china, taiwan, strait, pla, beijing, taipei, xi jinping]
+    pinned: false
+
+  - name: US Foreign Policy
+    keywords: [white house, pentagon, state department, congress, nato]
+    pinned: false
+
+  - name: NATO and European Security
+    keywords: [nato, alliance, european defense, troops, baltic]
+    pinned: false
+
+  - name: Nuclear Proliferation
+    keywords: [nuclear, weapon, missile, icbm, warhead, enrichment, iaea]
+    pinned: true
+
+  - name: Energy Geopolitics
+    keywords: [oil, gas, pipeline, opec, energy, sanctions, lng]
+    pinned: false
+
+  - name: Africa and Sahel
+    keywords: [sahel, africa, coup, wagner, mali, niger, sudan, ethiopia]
+    pinned: false
+
+  - name: North Korea
+    keywords: [north korea, pyongyang, kim jong, dprk, korean peninsula]
+    pinned: false
+
+  - name: South China Sea
+    keywords: [south china sea, spratly, paracel, philippines, maritime]
+    pinned: false
