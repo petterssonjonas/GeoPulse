@@ -5,6 +5,14 @@ Items marked **ASK USER** need a decision before implementation.
 
 ---
 
+**Note to self (project principle):** Keep the codebase **resource-effective and light**. Prefer
+minimal dependencies, bounded memory (process one item at a time where possible), and no
+heavy runtimes (no Electron/web frontend). **Stability is critical** — the app must not crash;
+defensive parsing, try/except around external I/O, schema migrations that don't leave the DB
+broken, and tests for hot paths. When in doubt, choose the simpler, more predictable approach.
+
+---
+
 ## Reliability & Hardening
 
 - **Fix source reliability**
@@ -49,6 +57,19 @@ No tests exist. Migrations, parser, and scraping have all had bugs.
 input, (4) `insert_article` / `insert_briefing` round-trip, (5) `score_severity` keywords.
 Use an in-memory SQLite DB for speed.
 *Files:* new `tests/` directory
+- **Parsing and scraping efficiency (light, one-at-a-time, tiered pull)**
+  Keep memory and CPU low: **pull one article at a time**, strip HTML to get plain text,
+  store cleaned data, then move to the next. Use only the cleaned data for briefing
+  generation — no holding dozens of full HTML docs in memory. **Tiered behaviour:**
+  - **Intermittent pull** from main (tier-1) sources on a schedule. For each item:
+    clean and check importance (severity/triage).
+  - **If high importance** (e.g. severity ≥ threshold): trigger a **"big pull"** — fetch
+    tier-2/3 as needed and **generate a briefing now** ("stuff is happening").
+  - **If lower importance:** pull, clean, store; **keep until next scheduled briefing time**.
+    No LLM call until the user's chosen time (e.g. morning brief or after-lunch brief).
+  This matches "sentinel then escalate" but makes explicit: don't batch-load HTML;
+  process stream-style so peak memory stays low.
+  *Files:* `scraping/fetchers.py`, `scraping/scheduler.py`, `storage/database.py`
 - **Parallel scraping with rate limiting**
 Sources are fetched serially. With 15+ sources this will be slow.
 *Implementation:* Use `concurrent.futures.ThreadPoolExecutor(max_workers=4)` in
@@ -85,30 +106,22 @@ displaying only the primary topic with a tooltip showing all.
 - **Data retention: prevent app data from overflowing**
   App data that can grow unbounded:
   1. **Briefings** — one row per card; `summary`, `developments`, `context`, etc. can be large.
-     **Setting:** "Keep last X briefings" (e.g. 50, 100, 200, 500, or "Unlimited"). Delete
-     older briefings (oldest first). Run cleanup after each scheduler cycle or once per day.
-  2. **Articles** — every scraped article; `full_text` is the main bloat. Can be hundreds per
-     day. **Setting:** "Keep articles for X days" (e.g. 30, 60, 90). Delete articles with
-     `fetched_at` older than that. Keep at least 7 days so "recent" and briefing view
-     sources still work. When deleting briefings, we don't delete articles (they're
-     shared); article retention is purely age-based.
-  3. **Conversations** — chat history per briefing; `messages` JSON. When a briefing is
-     deleted, delete its conversations (cascade or explicit DELETE WHERE briefing_id
-     NOT IN (kept briefing ids)). No separate cap needed if briefings are capped.
-  4. **user_topics** — small, fixed; no retention needed.
-  5. **Config** — single YAML file; negligible.
-  6. **Logs** — currently stderr only; no log file. If file logging is added later, use
-     rotation or max size so logs don't grow forever.
+     **Setting:** "Keep last N briefings". **Default 30** (standard). Options e.g. 30, 50, 100,
+     200, or Unlimited. Delete older briefings (oldest first). Run cleanup after each
+     scheduler cycle or once per day.
+  2. **Articles** — every scraped article; `full_text` is the main bloat. **Settings:** (a)
+     "Keep articles for X days" (e.g. 7, 30, 60, 90), and/or (b) "Keep max Y MB" of app
+     data (total DB or articles table). Clear downloaded/cleaned data after set time or
+     when over cap. Keep at least 7 days so "recent" and briefing view sources work.
+  3. **Conversations** — when a briefing is deleted, delete its conversations. No separate cap.
+  4. **user_topics, config, logs** — small; logs use rotation if file logging added.
 
-  *Implementation:* Add to Settings > new "Data" or "Storage" page: (1) Spin or combo
-  "Keep last N briefings" (default 100; 0 or -1 = unlimited). (2) Spin "Keep articles for
-  N days" (default 90). Store in config e.g. `retention: { max_briefings: 100,
-  article_days: 90 }`. In scheduler (or a periodic task), after each cycle: (a) count
-  briefings, if over cap delete oldest; (b) delete conversations whose briefing_id
-  was removed; (c) delete articles where fetched_at < (now - article_days). Run
-  VACUUM occasionally (e.g. weekly) to reclaim SQLite disk space after deletes.
-  *Files:* `storage/config.py`, `storage/database.py` (new functions: delete_old_briefings,
-  delete_old_articles, delete_orphan_conversations), `ui/settings_dialog.py`, `scraping/scheduler.py`.
+  *Implementation:* Settings > Data/Storage: (1) "Keep last N briefings" default **30**.
+  (2) "Keep articles for N days" (default 90). (3) Optional "Max app data size (MB)" —
+  when DB size exceeds, delete oldest articles (and briefings if needed) until under cap.
+  Config: `retention: { max_briefings: 30, article_days: 90, max_data_mb: 0 }` (0 = no cap).
+  Run cleanup after each cycle; VACUUM periodically.
+  *Files:* `storage/config.py`, `storage/database.py`, `ui/settings_dialog.py`, `scraping/scheduler.py`.
 
 ---
 
@@ -313,6 +326,24 @@ Save/share as markdown, PDF, or plain text. Copy to clipboard.
 Markdown is trivial (format fields into md). Plain text: strip formatting. PDF: use
 `weasyprint` or `reportlab`. Clipboard: `Gdk.Clipboard`.
 *Files:* `ui/briefing_view.py`, new `export.py`
+- **"Where can I follow this closely?" suggested question**
+  Add a fixed suggested-question button (or option) on each briefing: **"Where can I
+  follow this closely?"** When the user clicks it, the app suggests live streams,
+  creators, X (Twitter) accounts, journalists, and similar sources that are reporting
+  on the story. Implementation options: (A) **Chat-based:** Always show this button
+  alongside LLM-generated suggested questions; on click, start chat with that exact
+  question. Enrich the chat system prompt so that when the user asks where to follow
+  the story, the model responds with concrete suggestions: live streams (e.g. YouTube,
+  Twitch), X handles, YouTube channels, journalists or creators covering the topic.
+  (B) **Structured in briefing:** Add a <<<FOLLOW>>> section to the briefing template
+  so the LLM outputs a short list of follow sources (X accounts, streams, channels)
+  at generation time; display as a "Follow this story" block with clickable links/handles.
+  Option A is simpler (no prompt/schema change); option B gives a consistent block on
+  every briefing. Can combine: fixed button opens chat with the question; optionally
+  also ask the LLM for <<<FOLLOW>>> at brief gen time and show that block.
+  *Files:* `ui/briefing_view.py` (add button), `ui/chat_view.py` (system prompt tweak
+  when question is "where can I follow" or similar), optionally `analysis/briefing.py`
+  (<<<FOLLOW>>> in template and parse_briefing_response).
 - **Expert commentary (on demand): YouTube transcripts**
   When the user asks for "expert commentary" or similar, pull in YouTube video
   transcriptions (e.g. William Spaniel, Peter Zeihan, CFR, Chatham House, university
@@ -339,12 +370,37 @@ Markdown is trivial (format fields into md). Plain text: strip formatting. PDF: 
   `analysis/retrieval.py` (RAG for history), `data/sources.yaml`, briefing prompt
   and config flag for "include expert/history sources".
 - **Add a political leaning feature.** Much like blind spot for ground.news. If a user selects they are` leaning left (add scale?) then generate logical articles that also lean towards explaining consequenses, especially in relation to history and to established law. Ovmerride their leanings. - for right leaning, generate unbiasedly.
+- **Scheduled brief at a set time (e.g. after lunch, morning brief)**
+  User can set one or more times per day when a briefing should be ready (e.g. 13:00 for
+  after lunch, 08:00 for morning). **Morning brief:** pull and clean data overnight (or in
+  the hours before the set time); run `generate_briefing` so a latest-news brief is ready
+  at that time. Same for "after lunch" — have a fresh brief ready at 13:00. Implementation:
+  store preferred times in config (e.g. `scheduled_brief_times: ["08:00", "13:00"]`). In
+  the scheduler, besides interval-based generation, check wall-clock: if we're within a
+  window of a scheduled time and we haven't generated for that slot today, run a pull
+  (if needed) + generate and mark that slot done. Use the same "pull, clean, keep" data
+  so the brief is based on the latest cleaned content.
+  *Files:* `storage/config.py`, `scraping/scheduler.py`, `ui/settings_dialog.py`
+- **Do Not Disturb (DND)**
+  User can define one or more time ranges (A–B) and add them to a list. During those
+  times: (1) **no desktop notifications** (don't call notify-send), (2) **optional: no
+  briefing generation** (skip _do_generate_briefing in the scheduler when current time
+  falls inside any DND window). Scraping/pull can still run so data is ready when DND
+  ends. Config: `do_not_disturb: { ranges: [["22:00", "07:00"], ["12:00", "13:00"]], skip_generation: true }`.
+  Ranges are in local time; support overnight (e.g. 22:00–07:00). Settings UI: list of
+  time-range rows (start time, end time), "Add" button, remove per row; toggle "Don't
+  generate briefings during DND" (default true).
+  *Files:* `storage/config.py`, `scraping/scheduler.py` (check current time before
+  notify and before generation), `ui/settings_dialog.py` (Schedule or new DND section)
 - **"What did I miss" morning digest**
-Consolidate overnight briefings into a single summary on app open.
-*Implementation:* On app activate, check time since last user interaction. If >6 hours,
-gather all briefings created since then and generate a digest summary via LLM.
-Show as a special "digest" briefing card at the top.
-*Files:* `ui/window.py`, `analysis/briefing.py` (digest prompt template)
+  Consolidate overnight briefings into a single summary on app open. **Tie to scheduled
+  morning brief:** overnight pull/clean + one generate_briefing run so a morning brief is
+  ready at the user's set time (e.g. 08:00). On app activate, if >6 hours since last use,
+  can also show a digest card of what was created in that window.
+  *Implementation:* On app activate, check time since last user interaction. If >6 hours,
+  gather all briefings created since then and generate a digest summary via LLM.
+  Show as a special "digest" briefing card at the top.
+  *Files:* `ui/window.py`, `analysis/briefing.py` (digest prompt template)
 - **AI-powered triage**
 Replace keyword-based `score_severity` with a lightweight LLM call.
 *Implementation:* Send article title + summary to the LLM with a triage-only prompt
