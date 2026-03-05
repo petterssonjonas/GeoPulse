@@ -1,7 +1,17 @@
-"""Briefing generation with structured progressive-disclosure sections."""
+"""Briefing generation with structured progressive-disclosure sections.
+
+Parsing is designed for reliable results: marker-based extraction with fallbacks
+so malformed or non-compliant model output still yields a usable briefing. For
+consistent event/story classification across runs, we may later recommend or
+support a single "GeoPulse" model; different models can disagree on whether
+stories are the same event.
+"""
 import json
 import re
+import logging
 from providers import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a senior geopolitical intelligence analyst with deep expertise in
 international relations, military affairs, and regional politics. You produce concise,
@@ -103,14 +113,45 @@ def _extract_section(text: str, marker: str) -> str:
         if pos != -1:
             end = pos
             break
-    return text[start:end].strip()
+    raw = text[start:end].strip()
+    # Strip markdown code fences some models add
+    if raw.startswith("```") and "```" in raw[3:]:
+        raw = raw[3:].split("```", 1)[0].strip()
+    return raw
 
 
 def _parse_json_list(raw: str) -> list:
+    """Parse a list from model output: JSON array, or bullet lines, or quoted strings."""
+    if not (raw and raw.strip()):
+        return []
+    s = raw.strip()
+    # 1) JSON array
     try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return re.findall(r'"([^"]+)"', raw)
+        out = json.loads(s)
+        if isinstance(out, list):
+            return [str(x).strip() for x in out if str(x).strip()][:10]
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    # 2) Lines starting with - or * or number.
+    lines = []
+    for line in s.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^[\-\*]\s*(.+)", line) or re.match(r"^\d+[\.\)]\s*(.+)", line)
+        if m:
+            lines.append(m.group(1).strip())
+    if lines:
+        return lines[:10]
+    # 3) Double-quoted strings
+    quoted = re.findall(r'"([^"]+)"', s)
+    if quoted:
+        return [q.strip() for q in quoted if q.strip()][:10]
+    # 4) Single-quoted
+    quoted = re.findall(r"'([^']+)'", s)
+    if quoted:
+        return [q.strip() for q in quoted if q.strip()][:10]
+    return []
 
 
 def parse_briefing_response(text: str) -> dict:
@@ -139,6 +180,91 @@ def parse_briefing_response(text: str) -> dict:
     }
 
 
+def _first_line_like_headline(text: str, max_len: int = 200) -> str:
+    """First non-empty line that does not look like a marker or instruction."""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("<<<") or len(line) > max_len:
+            continue
+        if re.match(r"^\[?\d*[\.\)]\s*", line):
+            line = re.sub(r"^\[?\d*[\.\)]\s*", "", line).strip()
+        if line:
+            return line[:200]
+    return ""
+
+
+def _fallback_headline(parsed: dict, raw_response: str, articles: list) -> None:
+    if parsed.get("headline", "").strip():
+        return
+    candidate = _first_line_like_headline(raw_response)
+    if candidate:
+        parsed["headline"] = candidate
+        logger.debug("Fallback: headline from first line of response")
+        return
+    if articles:
+        first_title = (articles[0].get("title") or "").strip()
+        if first_title:
+            parsed["headline"] = first_title[:120]
+            logger.debug("Fallback: headline from first article title")
+            return
+    parsed["headline"] = f"Key developments from {len(articles)} sources"
+
+
+def _fallback_summary(parsed: dict, raw_response: str, articles: list) -> None:
+    if parsed.get("summary", "").strip():
+        return
+    dev = parsed.get("developments", "").strip()
+    if dev:
+        first_para = dev.split("\n\n")[0].strip()[:500]
+        if first_para:
+            parsed["summary"] = first_para
+            logger.debug("Fallback: summary from first paragraph of developments")
+            return
+    for a in articles[:3]:
+        s = (a.get("summary") or a.get("full_text") or "").strip()
+        if s:
+            parsed["summary"] = s[:400] + ("…" if len(s) > 400 else "")
+            logger.debug("Fallback: summary from first article")
+            return
+    parsed["summary"] = "See developments below."
+
+
+def _fallback_developments(parsed: dict, raw_response: str, articles: list) -> None:
+    if parsed.get("developments", "").strip():
+        return
+    ctx = parsed.get("context", "").strip()
+    if ctx:
+        parsed["developments"] = ctx
+        logger.debug("Fallback: developments from context")
+        return
+    parts = []
+    for i, a in enumerate(articles[:5], 1):
+        title = (a.get("title") or "").strip()
+        summary = (a.get("summary") or a.get("full_text") or "").strip()[:200]
+        if title:
+            parts.append(f"[{i}] {title}\n{summary}")
+    if parts:
+        parsed["developments"] = "\n\n".join(parts)
+        logger.debug("Fallback: developments from article titles and summaries")
+
+
+def apply_parsing_fallbacks(parsed: dict, raw_response: str, articles: list) -> None:
+    """Fill empty required fields from raw response or article list. Mutates parsed."""
+    _fallback_headline(parsed, raw_response, articles)
+    _fallback_summary(parsed, raw_response, articles)
+    _fallback_developments(parsed, raw_response, articles)
+
+
+def validate_briefing(parsed: dict) -> None:
+    """Raise ValueError if the briefing is not usable (e.g. empty headline)."""
+    headline = (parsed.get("headline") or "").strip()
+    if not headline:
+        raise ValueError(
+            "LLM produced no parseable briefing (missing headline). "
+            "Try a conversational model that follows instructions, or retry later."
+        )
+
+
 def generate_briefing(articles: list, topics: list, provider: LLMProvider,
                       depth: str = "brief") -> dict:
     depth = depth if depth in _DEPTH_INSTRUCTIONS else "brief"
@@ -160,6 +286,12 @@ def generate_briefing(articles: list, topics: list, provider: LLMProvider,
         {"role": "user", "content": prompt},
     ]
     response = provider.chat(messages)
+    if response is None:
+        response = ""
+    if not isinstance(response, str):
+        response = str(response) if response else ""
     parsed = parse_briefing_response(response)
+    apply_parsing_fallbacks(parsed, response, articles)
+    validate_briefing(parsed)
     parsed["article_ids"] = [a["id"] for a in articles if "id" in a]
     return parsed

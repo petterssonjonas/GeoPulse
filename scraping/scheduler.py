@@ -2,12 +2,14 @@
 import logging
 import subprocess
 import threading
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from storage.config import Config, load_sources
 from storage.database import (
     insert_article, article_exists, get_recent_articles, mark_articles_used,
-    insert_briefing, get_user_topics,
+    insert_briefing, get_user_topics, run_retention_cleanup,
+    get_source_check_time, set_source_check_time,
 )
 from scraping.fetchers import (
     fetch_sources_by_tier, fetch_all_sources, search_google_news,
@@ -52,8 +54,15 @@ class SmartScheduler:
         b_int = schedule.get("briefing_interval_minutes", 60)
         logger.info(f"  Sentinel every {s_int}m, briefings every {b_int}m")
 
-        threading.Thread(target=self._sentinel_cycle, daemon=True).start()
-        self._schedule_sentinel()
+        # Do not run sentinel immediately on start — respect min interval from last run (persisted)
+        delay = self._seconds_until_tier_allowed(1)
+        if delay is not None and delay > 0:
+            logger.info(f"  First sentinel in {delay}s (min interval)")
+            self._sentinel_timer = threading.Timer(delay, self._tick_sentinel)
+            self._sentinel_timer.daemon = True
+            self._sentinel_timer.start()
+        else:
+            threading.Thread(target=self._sentinel_cycle, daemon=True).start()
         self._schedule_briefing()
 
     def stop(self):
@@ -65,14 +74,60 @@ class SmartScheduler:
 
     # ── Sentinel cycle ────────────────────────────────────────────────────────
 
+    def _min_interval_seconds(self, tier: int) -> int:
+        schedule = Config.schedule()
+        if tier == 1:
+            return schedule.get("sentinel_min_interval_minutes", 5) * 60
+        return schedule.get("other_sources_min_interval_minutes", 20) * 60
+
+    def _can_run_tier(self, tier: int) -> bool:
+        """True if enough time has passed since last check for this tier."""
+        last = get_source_check_time(tier)
+        if last is None:
+            return True
+        try:
+            dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - dt).total_seconds()
+            return elapsed >= self._min_interval_seconds(tier)
+        except Exception:
+            return True
+
+    def _seconds_until_tier_allowed(self, tier: int) -> Optional[int]:
+        """Seconds until we're allowed to run this tier again, or 0/None if allowed now."""
+        last = get_source_check_time(tier)
+        if last is None:
+            return 0
+        try:
+            dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - dt).total_seconds()
+            min_sec = self._min_interval_seconds(tier)
+            if elapsed >= min_sec:
+                return 0
+            return int(min_sec - elapsed)
+        except Exception:
+            return 0
+
     def _sentinel_cycle(self):
         if not self._running:
             return
+        if not self._can_run_tier(1):
+            sec = self._seconds_until_tier_allowed(1)
+            if sec is not None and sec > 0:
+                mins = (sec + 59) // 60
+                self.on_status(f"Next check in {mins} min")
+                self._schedule_sentinel(delay_seconds=sec)
+            return
+        set_source_check_time(1)
         self.on_status("Checking news sources…")
         try:
             new_articles = self._fetch_and_store_tier(1)
             if not new_articles:
                 self.on_status("All quiet · no new articles")
+                self._schedule_sentinel()
                 return
 
             max_sev = max(a.get("severity", 1) for a in new_articles)
@@ -85,19 +140,27 @@ class SmartScheduler:
             else:
                 self.on_status(f"{len(new_articles)} new articles · routine")
                 self.on_refresh()
+            self._schedule_sentinel()
         except Exception as e:
             logger.error(f"Sentinel cycle error: {e}", exc_info=True)
             self.on_status(f"Error: {e}")
+            self._schedule_sentinel()
 
     def _escalate_context(self):
         self.on_status("Notable activity · checking analysis sources…")
-        self._fetch_and_store_tier(2)
+        if self._can_run_tier(2):
+            set_source_check_time(2)
+            self._fetch_and_store_tier(2)
         self.on_refresh()
 
     def _escalate_breaking(self):
         self.on_status("⚠ Breaking activity · full source check…")
-        self._fetch_and_store_tier(2)
-        self._fetch_and_store_tier(3)
+        if self._can_run_tier(2):
+            set_source_check_time(2)
+            self._fetch_and_store_tier(2)
+        if self._can_run_tier(3):
+            set_source_check_time(3)
+            self._fetch_and_store_tier(3)
         self._do_generate_briefing("breaking")
 
     # ── Ingestion ─────────────────────────────────────────────────────────────
@@ -157,6 +220,7 @@ class SmartScheduler:
 
             briefing_id = insert_briefing(briefing)
             mark_articles_used(briefing.get("article_ids", []))
+            run_retention_cleanup()
 
             sev = briefing.get("severity", 1)
             headline = briefing.get("headline", "New Briefing")
@@ -200,7 +264,13 @@ class SmartScheduler:
     # ── Manual refresh ────────────────────────────────────────────────────────
 
     def refresh_now(self):
-        """Run a full sentinel cycle + briefing generation in a background thread."""
+        """Run sentinel + briefing only if min interval since last sentinel check has passed."""
+        if not self._can_run_tier(1):
+            sec = self._seconds_until_tier_allowed(1)
+            if sec is not None and sec > 0:
+                mins = (sec + 59) // 60
+                self.on_status(f"Next check allowed in {mins} min")
+            return
         threading.Thread(target=self._manual_refresh, daemon=True).start()
 
     def _manual_refresh(self):
@@ -238,17 +308,19 @@ class SmartScheduler:
 
     # ── Timers ────────────────────────────────────────────────────────────────
 
-    def _schedule_sentinel(self):
+    def _schedule_sentinel(self, delay_seconds: int = None):
         if not self._running:
             return
-        interval = Config.schedule().get("sentinel_interval_minutes", 15) * 60
+        if delay_seconds is None:
+            interval = Config.schedule().get("sentinel_interval_minutes", 15) * 60
+        else:
+            interval = max(1, delay_seconds)
         self._sentinel_timer = threading.Timer(interval, self._tick_sentinel)
         self._sentinel_timer.daemon = True
         self._sentinel_timer.start()
 
     def _tick_sentinel(self):
         self._sentinel_cycle()
-        self._schedule_sentinel()
 
     def _schedule_briefing(self):
         if not self._running:

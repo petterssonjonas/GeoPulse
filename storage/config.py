@@ -20,6 +20,8 @@ DEFAULT_CONFIG = {
         "briefing_interval_minutes": 60,
         "breaking_threshold": 4,
         "max_articles_per_briefing": 20,
+        "sentinel_min_interval_minutes": 5,
+        "other_sources_min_interval_minutes": 20,
     },
     "notifications": {
         "enabled": True,
@@ -31,6 +33,10 @@ DEFAULT_CONFIG = {
     },
     "briefing": {
         "depth": "brief",   # "brief" or "extended"
+    },
+    "retention": {
+        "max_briefings": 30,
+        "article_retention_days": 14,
     },
 }
 
@@ -155,3 +161,7 @@ class Config:
     @classmethod
     def briefing_depth(cls) -> str:
         return cls.get().get("briefing", {}).get("depth", "brief")
+
+    @classmethod
+    def retention(cls) -> dict:
+        return cls.get().get("retention", {})

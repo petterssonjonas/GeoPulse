@@ -26,6 +26,7 @@ class SettingsDialog(Adw.PreferencesWindow):
     def _build(self):
         self._build_ai_page()
         self._build_schedule_page()
+        self._build_retention_page()
         self._build_topics_page()
 
     # ── AI Engine ─────────────────────────────────────────────────────────────
@@ -88,6 +89,19 @@ class SettingsDialog(Adw.PreferencesWindow):
 
         page.add(grp2)
 
+        # Briefing depth (moved from header)
+        grp_depth = Adw.PreferencesGroup(
+            title="Briefing depth",
+            description="Default depth for new briefings. Use \"Go deeper\" in a briefing to regenerate with extended depth.",
+        )
+        depth_list = Gtk.StringList.new(["Brief", "Extended"])
+        depth_row = Adw.ComboRow(title="Default depth")
+        depth_row.set_model(depth_list)
+        depth_row.set_selected(1 if Config.briefing_depth() == "extended" else 0)
+        depth_row.connect("notify::selected", self._on_depth_changed)
+        grp_depth.add(depth_row)
+        page.add(grp_depth)
+
         # Ollama management
         grp3 = Adw.PreferencesGroup(title="Ollama")
         ollama_cfg = Config.ollama_config()
@@ -126,6 +140,26 @@ class SettingsDialog(Adw.PreferencesWindow):
 
         page.add(grp)
 
+        grp_throttle = Adw.PreferencesGroup(
+            title="Source check throttle",
+            description="Minimum time between source checks (persists across app restarts). Stops over-scraping and avoids a full refresh every time you open the app.",
+        )
+        sentinel_min = Adw.SpinRow.new_with_range(1, 60, 1)
+        sentinel_min.set_title("Sentinel min interval (minutes)")
+        sentinel_min.set_subtitle("Max once per this many minutes; e.g. 5")
+        sentinel_min.set_value(schedule.get("sentinel_min_interval_minutes", 5))
+        sentinel_min.connect("notify::value", lambda r, _: Config.update(
+            schedule={"sentinel_min_interval_minutes": int(r.get_value())}))
+        grp_throttle.add(sentinel_min)
+        other_min = Adw.SpinRow.new_with_range(5, 120, 5)
+        other_min.set_title("Other sources min interval (minutes)")
+        other_min.set_subtitle("Tier 2/3 (context, official) at most once per this many minutes; e.g. 20")
+        other_min.set_value(schedule.get("other_sources_min_interval_minutes", 20))
+        other_min.connect("notify::value", lambda r, _: Config.update(
+            schedule={"other_sources_min_interval_minutes": int(r.get_value())}))
+        grp_throttle.add(other_min)
+        page.add(grp_throttle)
+
         grp2 = Adw.PreferencesGroup(title="Notifications")
         notify_switch = Adw.SwitchRow(title="Desktop Notifications")
         notify_switch.set_active(notifications.get("enabled", True))
@@ -141,6 +175,35 @@ class SettingsDialog(Adw.PreferencesWindow):
         grp2.add(threshold_row)
 
         page.add(grp2)
+
+    # ── Data retention ────────────────────────────────────────────────────────
+
+    def _build_retention_page(self):
+        page = Adw.PreferencesPage(title="Data", icon_name="drive-harddisk-symbolic")
+        self.add(page)
+
+        retention = Config.retention()
+        grp = Adw.PreferencesGroup(
+            title="Data retention",
+            description="Limit stored briefings and article age to keep storage bounded.",
+        )
+        max_br = Adw.SpinRow.new_with_range(5, 500, 5)
+        max_br.set_title("Max briefings to keep")
+        max_br.set_subtitle("Oldest briefings (and their Q&A) are removed when over this limit")
+        max_br.set_value(retention.get("max_briefings", 30))
+        max_br.connect("notify::value", lambda r, _: Config.update(
+            retention={"max_briefings": int(r.get_value())}))
+        grp.add(max_br)
+
+        art_days = Adw.SpinRow.new_with_range(0, 365, 1)
+        art_days.set_title("Article retention (days)")
+        art_days.set_subtitle("Articles older than this are deleted (0 = keep all)")
+        art_days.set_value(retention.get("article_retention_days", 14))
+        art_days.connect("notify::value", lambda r, _: Config.update(
+            retention={"article_retention_days": int(r.get_value())}))
+        grp.add(art_days)
+
+        page.add(grp)
 
     # ── Topics ────────────────────────────────────────────────────────────────
 
@@ -211,3 +274,7 @@ class SettingsDialog(Adw.PreferencesWindow):
 
     def _on_api_key_changed(self, row):
         Config.update(llm={"api_key": row.get_text()})
+
+    def _on_depth_changed(self, row, _param):
+        depth = "extended" if row.get_selected() == 1 else "brief"
+        Config.update(briefing={"depth": depth})

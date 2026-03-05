@@ -1,9 +1,12 @@
 """SQLite storage for articles, briefings, conversations, and user topics."""
 import sqlite3
 import json
-from datetime import datetime, timezone
-from typing import Optional, List, Dict
-from storage.config import get_db_path
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Dict, Callable
+from storage.config import get_db_path, Config
+
+# Current schema version after all migrations. Bump when adding a new migration.
+CURRENT_SCHEMA_VERSION = 2
 
 
 def _now() -> str:
@@ -76,14 +79,45 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_articles_severity ON articles(severity DESC);
         CREATE INDEX IF NOT EXISTS idx_briefings_created ON briefings(created_at DESC);
     """)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS schema_info (key TEXT PRIMARY KEY, value INTEGER);
+        INSERT OR IGNORE INTO schema_info (key, value) VALUES ('schema_version', 0);
+    """)
     conn.commit()
-    _migrate(conn)
+    _run_migrations(conn)
     conn.close()
 
 
-def _migrate(conn):
-    """Add columns that may be missing from an older schema version."""
-    migrations = [
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM schema_info WHERE key = 'schema_version'").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def get_schema_version() -> int:
+    """Return current schema version (for tests and debugging)."""
+    conn = get_connection()
+    try:
+        try:
+            return _get_schema_version(conn)
+        except sqlite3.OperationalError:
+            return 0
+    finally:
+        conn.close()
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Run all pending migrations in order. Uses schema_info.schema_version."""
+    for version, migrate_fn in _MIGRATIONS:
+        if version <= _get_schema_version(conn):
+            continue
+        migrate_fn(conn)
+        conn.execute("UPDATE schema_info SET value = ? WHERE key = 'schema_version'", (version,))
+        conn.commit()
+
+
+def _migration_1(conn: sqlite3.Connection) -> None:
+    """Add missing columns; migrate briefings.body -> developments; repair conversations FK."""
+    add_columns = [
         ("articles", "source_tier", "INTEGER DEFAULT 1"),
         ("briefings", "developments", "TEXT"),
         ("briefings", "context", "TEXT"),
@@ -94,16 +128,14 @@ def _migrate(conn):
         ("briefings", "source_count", "INTEGER DEFAULT 0"),
         ("briefings", "topics", "TEXT"),
     ]
-    for table, column, coltype in migrations:
+    for table, column, coltype in add_columns:
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
         except sqlite3.OperationalError:
             pass
 
-    # Prevent SQLite 3.25+ from rewriting FK references in other tables
     conn.execute("PRAGMA legacy_alter_table = ON")
 
-    # If the old schema has a 'body NOT NULL' column, rebuild the table
     cols = {r[1] for r in conn.execute("PRAGMA table_info(briefings)").fetchall()}
     if "body" in cols:
         try:
@@ -151,7 +183,6 @@ def _migrate(conn):
         conn.execute("DROP TABLE _briefings_old")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_briefings_created ON briefings(created_at DESC)")
 
-    # Repair conversations table if a previous migration corrupted its FK reference
     conv_schema = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='conversations'"
     ).fetchone()
@@ -169,7 +200,22 @@ def _migrate(conn):
         conn.execute("DROP TABLE _conversations_old")
 
     conn.execute("PRAGMA legacy_alter_table = OFF")
-    conn.commit()
+
+
+def _migration_2(conn: sqlite3.Connection) -> None:
+    """Persist last source-check time per tier for throttle (sentinel 5 min, other 20 min)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_check_log (
+            tier INTEGER PRIMARY KEY,
+            checked_at TEXT NOT NULL
+        )
+    """)
+
+
+_MIGRATIONS: List[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+    (1, _migration_1),
+    (2, _migration_2),
+]
 
 
 # ─── ARTICLES ─────────────────────────────────────────────────────────────────
@@ -258,6 +304,33 @@ def get_articles_for_briefing(briefing_id: int) -> List[Dict]:
         conn.close()
 
 
+# ─── SOURCE CHECK LOG (throttle: persist last check time per tier) ─────────────
+
+def get_source_check_time(tier: int) -> Optional[str]:
+    """Return ISO timestamp of last check for this tier, or None."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT checked_at FROM source_check_log WHERE tier = ?", (tier,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def set_source_check_time(tier: int, checked_at: str = None) -> None:
+    """Record that we checked this tier at the given time (default now)."""
+    if checked_at is None:
+        checked_at = _now()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO source_check_log (tier, checked_at) VALUES (?, ?)",
+            (tier, checked_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ─── BRIEFINGS ────────────────────────────────────────────────────────────────
 
 def insert_briefing(briefing: dict) -> int:
@@ -338,10 +411,67 @@ def mark_briefing_read(briefing_id: int):
         conn.close()
 
 
+def update_briefing(briefing_id: int, briefing: dict) -> None:
+    """Update an existing briefing's content (e.g. after Go deeper regeneration)."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            UPDATE briefings SET
+                headline = ?, summary = ?, developments = ?, context = ?, actors = ?,
+                outlook = ?, watch_indicators = ?, severity = ?, confidence = ?,
+                article_ids = ?, suggested_questions = ?, source_count = ?, topics = ?
+            WHERE id = ?
+        """, (
+            briefing.get("headline", ""),
+            briefing.get("summary", ""),
+            briefing.get("developments", ""),
+            briefing.get("context", ""),
+            briefing.get("actors", ""),
+            briefing.get("outlook", ""),
+            json.dumps(briefing.get("watch_indicators", [])),
+            briefing.get("severity", 1),
+            briefing.get("confidence", "medium"),
+            json.dumps(briefing.get("article_ids", [])),
+            json.dumps(briefing.get("suggested_questions", [])),
+            briefing.get("source_count", 0),
+            json.dumps(briefing.get("topics", [])),
+            briefing_id,
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_unread_count() -> int:
     conn = get_connection()
     try:
         return conn.execute("SELECT COUNT(*) FROM briefings WHERE is_read = 0").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def run_retention_cleanup() -> None:
+    """Keep at most max_briefings (newest), drop older briefings and their conversations; drop articles older than article_retention_days."""
+    cfg = Config.retention()
+    max_briefings = max(1, int(cfg.get("max_briefings", 30)))
+    article_days = max(0, int(cfg.get("article_retention_days", 14)))
+    conn = get_connection()
+    try:
+        # Briefings to remove: all but the newest max_briefings (by created_at DESC, so we want ids beyond the first max_briefings)
+        rows = conn.execute(
+            "SELECT id FROM briefings ORDER BY created_at DESC LIMIT 9999 OFFSET ?",
+            (max_briefings,),
+        ).fetchall()
+        ids_to_remove = [r[0] for r in rows]
+        if ids_to_remove:
+            placeholders = ",".join("?" * len(ids_to_remove))
+            conn.execute(f"DELETE FROM conversations WHERE briefing_id IN ({placeholders})", ids_to_remove)
+            conn.execute(f"DELETE FROM briefings WHERE id IN ({placeholders})", ids_to_remove)
+        # Articles older than article_retention_days (by fetched_at)
+        if article_days > 0:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=article_days)).strftime("%Y-%m-%dT%H:%M:%S")
+            conn.execute("DELETE FROM articles WHERE fetched_at < ?", (cutoff,))
+        conn.commit()
     finally:
         conn.close()
 
@@ -365,6 +495,23 @@ def get_conversation(conv_id: int) -> Optional[Dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["messages"] = json.loads(d["messages"])
+        return d
+    finally:
+        conn.close()
+
+
+def get_conversation_by_briefing(briefing_id: int) -> Optional[Dict]:
+    """Return the most recent conversation for this briefing, or None."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM conversations WHERE briefing_id = ? ORDER BY id DESC LIMIT 1",
+            (briefing_id,),
+        ).fetchone()
         if not row:
             return None
         d = dict(row)

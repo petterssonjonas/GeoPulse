@@ -24,7 +24,8 @@ class OllamaProvider(LLMProvider):
             timeout=300,
         )
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        content = resp.json().get("message", {}).get("content")
+        return content if isinstance(content, str) else (str(content) if content else "")
 
     def stream_chat(self, messages: List[Dict]) -> Iterator[str]:
         resp = requests.post(

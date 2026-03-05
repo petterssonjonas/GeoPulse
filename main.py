@@ -50,7 +50,7 @@ def main():
         from storage.config import ensure_dirs, load_default_topics, Config
         from storage.database import (
             init_db, seed_default_topics, get_recent_articles,
-            insert_briefing, mark_articles_used,
+            insert_briefing, mark_articles_used, run_retention_cleanup,
         )
         from providers import create_provider
         from analysis.briefing import generate_briefing
@@ -68,6 +68,7 @@ def main():
         briefing = generate_briefing(articles, topics, provider)
         bid = insert_briefing(briefing)
         mark_articles_used(briefing.get("article_ids", []))
+        run_retention_cleanup()
         sev = briefing.get("severity", 1)
         print(f"\n[{sev}/5] {briefing.get('headline', '?')}")
         print(f"\n{briefing.get('summary', '')}")

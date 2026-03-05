@@ -26,7 +26,9 @@ class OpenAIProvider(LLMProvider):
             timeout=120,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content")
+        return content if isinstance(content, str) else (str(content) if content else "")
 
     def stream_chat(self, messages: List[Dict]) -> Iterator[str]:
         resp = requests.post(

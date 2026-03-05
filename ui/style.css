@@ -100,23 +100,48 @@
 
 /* ── Source chips (link buttons) ────────────────────────────────────────── */
 .source-chip-btn {
-    border-radius: 20px;
-    padding: 2px 9px;
-    font-size: 0.77em;
+    border-radius: 10px;
+    padding: 6px 12px;
+    font-size: 0.8em;
     min-height: 0;
+    min-width: 60px;
+    border: 1px solid alpha(@accent_color, 0.4);
+    background: alpha(@accent_color, 0.06);
+}
+.source-chip-btn:hover {
+    background: alpha(@accent_color, 0.12);
+    border-color: @accent_color;
+}
+.source-chip-btn:active {
+    background: alpha(@accent_color, 0.18);
 }
 
 /* ── Action buttons ─────────────────────────────────────────────────────── */
 .suggested-q-btn {
-    border-radius: 16px;
-    padding: 5px 12px;
-    font-size: 0.83em;
-    border: 1px solid alpha(@accent_color, 0.5);
-    background: alpha(@accent_color, 0.07);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: 0.88em;
+    border: 1px solid alpha(@accent_color, 0.45);
+    background: alpha(@accent_color, 0.06);
+    min-height: 0;
+    margin-top: 2px;
+    margin-bottom: 2px;
 }
 .suggested-q-btn:hover {
-    background: alpha(@accent_color, 0.18);
+    background: alpha(@accent_color, 0.15);
     border-color: @accent_color;
+}
+.suggested-q-btn:active {
+    background: alpha(@accent_color, 0.22);
+}
+/* Suggested follow-up questions as list rows (Adw.ActionRow) - kept for any other use */
+.suggested-q-row {
+    margin-top: 4px;
+    margin-bottom: 4px;
+    border-radius: 8px;
+}
+.suggested-q-row:hover {
+    background: alpha(@accent_color, 0.08);
 }
 .search-btn {
     border-radius: 20px;
@@ -177,6 +202,15 @@
     border-radius: 6px;
     background: alpha(@warning_color, 0.1);
     border: 1px solid alpha(@warning_color, 0.3);
+}
+/* Plain text style for "What to watch" list — no button look, no flash */
+.watch-indicator-text {
+    font-size: 0.88em;
+    opacity: 0.9;
+    padding: 2px 0;
+}
+.watch-indicator-text:hover {
+    opacity: 1.0;
 }
 .quiet-subtitle {
     font-size: 0.9em;

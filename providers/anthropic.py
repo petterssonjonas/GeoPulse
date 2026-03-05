@@ -45,7 +45,9 @@ class AnthropicProvider(LLMProvider):
             f"{self.base_url}/messages", headers=self._headers, json=payload, timeout=120,
         )
         resp.raise_for_status()
-        return resp.json()["content"][0]["text"]
+        data = resp.json()
+        content = (data.get("content") or [{}])[0].get("text")
+        return content if isinstance(content, str) else (str(content) if content else "")
 
     def stream_chat(self, messages: List[Dict]) -> Iterator[str]:
         system, msgs = self._extract_system(messages)

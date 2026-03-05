@@ -1,4 +1,4 @@
-"""Briefing detail view with progressive disclosure and inline ask input."""
+"""Briefing detail view with progressive disclosure, inline Q&A, and ask input."""
 import re
 import gi
 gi.require_version("Gtk", "4.0")
@@ -62,13 +62,59 @@ def _format_time_ago(iso_str):
         return iso_str[:10]
 
 
+def _qa_user_row(text: str) -> Gtk.Box:
+    """Single row for user question in inline Q&A."""
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    outer.set_margin_top(6)
+    outer.set_margin_bottom(2)
+    role = _lbl("YOU", "chat-role-label")
+    role.set_halign(Gtk.Align.END)
+    outer.append(role)
+    bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    bubble.add_css_class("chat-user-bubble")
+    bubble.set_halign(Gtk.Align.END)
+    lbl = Gtk.Label(label=text, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True)
+    lbl.add_css_class("body-text")
+    bubble.append(lbl)
+    outer.append(bubble)
+    return outer
+
+
+def _scroll_to_bottom_idle(adj) -> bool:
+    adj.set_value(max(0, adj.get_upper() - adj.get_page_size()))
+    return False
+
+
+def _qa_analyst_row() -> tuple[Gtk.Box, Gtk.TextBuffer]:
+    """Row for analyst reply; returns (box, text_buffer) for streaming."""
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    outer.set_margin_top(6)
+    outer.set_margin_bottom(6)
+    role = _lbl("ANALYST", "chat-role-label")
+    outer.append(role)
+    bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    bubble.add_css_class("chat-ai-bubble")
+    tv = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+    tv.add_css_class("body-text")
+    tv.set_can_focus(False)
+    buf = tv.get_buffer()
+    bubble.append(tv)
+    outer.append(bubble)
+    return outer, buf
+
+
 class BriefingDetailView(Gtk.Box):
-    def __init__(self, on_start_chat):
+    def __init__(self, on_start_chat, run_follow_up=None, on_go_deeper=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.on_start_chat = on_start_chat
+        self._run_follow_up = run_follow_up  # (briefing_id, question, on_chunk, on_done) -> run LLM and call back
+        self._on_go_deeper = on_go_deeper    # (briefing_id) -> regenerate with extended depth
         self._current_briefing = None
+        self._current_conv_id = None
+        self._streaming = False
 
         scroll = Gtk.ScrolledWindow()
+        self._scroll = scroll
         scroll.set_vexpand(True)
         scroll.set_hexpand(True)
         scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -106,79 +152,117 @@ class BriefingDetailView(Gtk.Box):
     def _on_ask(self, widget):
         text = self._ask_entry.get_text().strip()
         self._ask_entry.set_text("")
-        self.on_start_chat(text if text else None)
+        if not text:
+            return
+        if self._run_follow_up and self._current_briefing:
+            self._submit_question(text)
+        else:
+            self.on_start_chat(text)
 
-    def load_briefing(self, briefing: dict):
-        self._current_briefing = briefing
-        db.mark_briefing_read(briefing["id"])
+    def _submit_question(self, question: str):
+        """Append user + analyst row and stream reply inline."""
+        if self._streaming or not self._current_briefing or not self._run_follow_up:
+            return
+        self._qa_thinking_lbl.set_label("Thinking…")
+        self._qa_thinking_lbl.set_visible(True)
+        self._qa_box.append(_qa_user_row(question))
+        analyst_row, buf = _qa_analyst_row()
+        buf.set_text("Thinking…")
+        self._qa_box.append(analyst_row)
+        self._streaming = True
+        self._scroll_to_qa_bottom()
+        GLib.timeout_add(100, self._scroll_to_qa_bottom)
 
-        while child := self._content.get_first_child():
-            self._content.remove(child)
+        def on_chunk(chunk: str):
+            GLib.idle_add(self._append_qa_chunk, buf, chunk)
 
+        def on_done():
+            GLib.idle_add(self._qa_done, buf)
+
+        self._run_follow_up(self._current_briefing["id"], question, on_chunk, on_done)
+
+    def _append_qa_chunk(self, buf: Gtk.TextBuffer, chunk: str) -> bool:
+        start = buf.get_start_iter()
+        end = buf.get_end_iter()
+        current = buf.get_text(start, end, False)
+        if current == "Thinking…" and chunk:
+            buf.set_text("")
+        end = buf.get_end_iter()
+        buf.insert(end, chunk)
+        self._scroll_to_qa_bottom()
+        return False
+
+    def _qa_done(self, buf: Gtk.TextBuffer) -> bool:
+        start = buf.get_start_iter()
+        end = buf.get_end_iter()
+        text = buf.get_text(start, end, False)
+        if text.strip() == "Thinking…" or not text.strip():
+            buf.set_text("No response. Check model and connection.")
+        else:
+            buf.set_text(_strip_md(text))
+        self._streaming = False
+        self._qa_thinking_lbl.set_label("")
+        self._qa_thinking_lbl.set_visible(False)
+        self._scroll_to_qa_bottom()
+        return False
+
+    def _scroll_to_qa_bottom(self):
+        adj = self._scroll.get_vadjustment()
+        GLib.idle_add(lambda: _scroll_to_bottom_idle(adj))
+
+    def _load_qa_history(self, briefing_id: int):
+        """Load existing conversation into _qa_box if any."""
+        pass
+
+    def _build_content_sections(self, briefing: dict):
+        """Return list of widgets for briefing body (no Q&A)."""
+        widgets = []
         sev = briefing.get("severity", 1)
-
-        # Breaking bar
         if briefing.get("briefing_type") == "breaking":
             bar_lbl = Gtk.Label(label="BREAKING INTELLIGENCE")
             bar_lbl.add_css_class("breaking-label")
             bar_box = Gtk.Box()
             bar_box.add_css_class("breaking-bar")
             bar_box.append(bar_lbl)
-            self._content.append(bar_box)
-
-        # Meta row
+            widgets.append(bar_box)
         meta = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         badge = Gtk.Label(label=SEVERITY_LABELS.get(sev, "ROUTINE"))
         badge.add_css_class("severity-badge")
         badge.add_css_class(f"sev-{sev}")
         meta.append(badge)
-
         conf = briefing.get("confidence", "medium")
         meta.append(_lbl(f"· {conf.upper()} confidence", "meta-label"))
         meta.append(_lbl(f"· {_format_time_ago(briefing.get('created_at', ''))}", "meta-label"))
-        self._content.append(meta)
-
-        # Headline
+        widgets.append(meta)
         headline = briefing.get("headline", "").strip()
-        hl = _lbl(headline or "Untitled Briefing", "briefing-headline", wrap=True, selectable=True)
-        self._content.append(hl)
-
-        self._content.append(Gtk.Separator())
-
-        # Summary
+        widgets.append(_lbl(headline or "Untitled Briefing", "briefing-headline", wrap=True, selectable=True))
+        widgets.append(Gtk.Separator())
         summary = briefing.get("summary", "")
         if summary:
-            self._content.append(_body(summary))
-
-        # Developments
+            widgets.append(_body(summary))
         dev = _strip_md(briefing.get("developments", ""))
         if dev:
-            self._content.append(_lbl("KEY DEVELOPMENTS", "section-header"))
+            widgets.append(_lbl("KEY DEVELOPMENTS", "section-header"))
             for para in dev.split("\n\n"):
                 para = para.strip()
                 if para:
-                    self._content.append(_body(para))
-
-        # Empty content fallback
+                    widgets.append(_body(para))
         has_text = summary or dev
         if not has_text:
             notice = _lbl(
                 "This briefing has no analysis content. The AI model may have "
                 "produced an unparseable response — try switching to a "
-                "conversational model (e.g. qwen3:4b) in the header dropdown.",
+                "conversational model (e.g. qwen3:4b) in Settings > AI Engine.",
                 "meta-label", wrap=True,
             )
             notice.set_margin_top(12)
-            self._content.append(notice)
-
-        # Progressive disclosure
+            widgets.append(notice)
         has_more = any(briefing.get(k) for k in ("context", "actors", "outlook")) or briefing.get("watch_indicators")
         if has_more:
             revealer = Gtk.Revealer()
-            revealer.set_reveal_child(False)
-            revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+            revealer.set_reveal_child(True)
+            revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
             more = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-
             for key, title in [("context", "HISTORICAL CONTEXT"), ("actors", "KEY ACTORS"), ("outlook", "OUTLOOK")]:
                 text = _strip_md(briefing.get(key, "") or "")
                 if text:
@@ -186,37 +270,32 @@ class BriefingDetailView(Gtk.Box):
                     for para in text.split("\n\n"):
                         if para.strip():
                             more.append(_body(para.strip()))
-
             indicators = briefing.get("watch_indicators", [])
             if indicators:
                 more.append(_lbl("WHAT TO WATCH", "section-header"))
+                watch_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
                 for ind in indicators:
                     w = _lbl(f"→  {ind}", wrap=True)
-                    w.add_css_class("watch-indicator")
-                    more.append(w)
-
+                    w.add_css_class("watch-indicator-text")
+                    watch_box.append(w)
+                more.append(watch_box)
             revealer.set_child(more)
-            self._content.append(revealer)
-
-            read_more_btn = Gtk.Button(label="Read full analysis…")
-            read_more_btn.add_css_class("flat")
-            read_more_btn.set_halign(Gtk.Align.START)
-            def _toggle(btn, rev=revealer):
-                showing = rev.get_reveal_child()
-                rev.set_reveal_child(not showing)
-                btn.set_label("Collapse" if not showing else "Read full analysis…")
-            read_more_btn.connect("clicked", _toggle)
-            self._content.append(read_more_btn)
-
-        # Sources as link buttons
+            widgets.append(revealer)
+            go_deeper_btn = Gtk.Button(label="Go deeper")
+            go_deeper_btn.set_tooltip_text("Regenerate this briefing with extended depth (more paragraphs, nuance)")
+            go_deeper_btn.add_css_class("suggested-action")
+            go_deeper_btn.set_halign(Gtk.Align.START)
+            go_deeper_btn.connect("clicked", lambda b: self._on_go_deeper and self._current_briefing and self._on_go_deeper(self._current_briefing["id"]))
+            widgets.append(go_deeper_btn)
         sources = db.get_articles_for_briefing(briefing["id"])
         if sources:
-            self._content.append(_lbl("SOURCES", "section-header"))
-            src_box = Gtk.FlowBox()
-            src_box.set_max_children_per_line(4)
-            src_box.set_selection_mode(Gtk.SelectionMode.NONE)
-            src_box.set_row_spacing(4)
-            src_box.set_column_spacing(4)
+            widgets.append(_lbl("SOURCES", "section-header"))
+            src_flow = Gtk.FlowBox()
+            src_flow.set_selection_mode(Gtk.SelectionMode.NONE)
+            src_flow.set_max_children_per_line(20)
+            src_flow.set_min_children_per_line(1)
+            src_flow.set_row_spacing(4)
+            src_flow.set_column_spacing(8)
             seen = set()
             for a in sources[:12]:
                 sname = a.get("source_name", "")
@@ -230,17 +309,58 @@ class BriefingDetailView(Gtk.Box):
                     btn = Gtk.Button(label=sname)
                     btn.set_sensitive(False)
                 btn.add_css_class("source-chip-btn")
-                src_box.append(btn)
-            self._content.append(src_box)
-
-        # Suggested questions
+                src_flow.append(btn)
+            widgets.append(src_flow)
         questions = briefing.get("suggested_questions", [])
         if questions:
-            self._content.append(Gtk.Separator())
-            self._content.append(_lbl("SUGGESTED QUESTIONS", "section-header"))
+            widgets.append(Gtk.Separator())
+            widgets.append(_lbl("SUGGESTED QUESTIONS", "section-header"))
             for q in questions:
                 btn = Gtk.Button(label=q)
+                btn.set_halign(Gtk.Align.FILL)
+                btn.set_hexpand(True)
+                btn.set_focus_on_click(False)
+                btn.set_can_focus(False)
                 btn.add_css_class("suggested-q-btn")
-                btn.set_halign(Gtk.Align.START)
-                btn.connect("clicked", lambda b, question=q: self.on_start_chat(question))
-                self._content.append(btn)
+                btn.connect("clicked", lambda b, question=q: self._submit_question(question))
+                widgets.append(btn)
+        return widgets
+
+    def update_content(self, briefing: dict):
+        """Update briefing body but keep the existing Q&A section."""
+        if not getattr(self, "_qa_header_box", None) or not getattr(self, "_qa_box", None):
+            self.load_briefing(briefing)
+            return
+        self._current_briefing = briefing
+        new_sections = self._build_content_sections(briefing)
+        child = self._content.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            if child != self._qa_header_box and child != self._qa_box:
+                self._content.remove(child)
+            child = next_child
+        for w in reversed(new_sections):
+            self._content.prepend(w)
+
+    def load_briefing(self, briefing: dict):
+        self._current_briefing = briefing
+        db.mark_briefing_read(briefing["id"])
+
+        while child := self._content.get_first_child():
+            self._content.remove(child)
+
+        for w in self._build_content_sections(briefing):
+            self._content.append(w)
+
+        self._content.append(Gtk.Separator())
+        qa_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        qa_header_box.set_margin_bottom(4)
+        qa_header_box.append(_lbl("FOLLOW-UP Q&A", "section-header"))
+        self._qa_thinking_lbl = Gtk.Label(label="")
+        self._qa_thinking_lbl.add_css_class("meta-label")
+        self._qa_thinking_lbl.set_visible(False)
+        qa_header_box.append(self._qa_thinking_lbl)
+        self._qa_header_box = qa_header_box
+        self._content.append(qa_header_box)
+        self._qa_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._content.append(self._qa_box)

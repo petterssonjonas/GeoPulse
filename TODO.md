@@ -15,117 +15,84 @@ broken, and tests for hot paths. When in doubt, choose the simpler, more predict
 
 ## Reliability & Hardening
 
-- **Fix source reliability**
-Reuters DNS fails, AP feed won't parse. Currently only BBC and Al Jazeera work out of 4
-tier-1 sources.
-*Implementation:* Add 10-15 sources to `data/sources.yaml`. Add retry logic (3 attempts
-with backoff) in `scraping/fetchers.py`. Add per-source error counting in the DB and
-a `last_error` / `last_success` timestamp. Skip sources that have failed 5+ times in a
-row until the next full cycle.
-*Files:* `data/sources.yaml`, `scraping/fetchers.py`, `storage/database.py`
-- **Robust LLM prompt parsing**
-If the model doesn't produce exact `<<<MARKERS>>>`, all fields come back empty. This
-happened in practice when user selected StarCoder2:15B (a code model).
-*Implementation:* In `analysis/briefing.py` `parse_briefing_response()`, add a fallback
-chain: (1) try current marker parsing, (2) try JSON block extraction, (3) try markdown
-header extraction (`## HEADLINE`, `## SUMMARY`), (4) regex for common patterns,
-(5) last resort: use first line as headline, rest as summary.
-**ASK USER:** Should we also validate the selected model before generation? (e.g. warn
-if a known code-only model is selected)
-*Files:* `analysis/briefing.py`
-- **Article deduplication**
-BBC and Al Jazeera both cover the same stories. LLM gets fed duplicates, wastes tokens.
-*Implementation:* Before passing articles to briefing generation, deduplicate by fuzzy
-title matching (difflib.SequenceMatcher, threshold ~0.7). Group similar articles, keep
-the one with the longest full_text. Pass the group's source names to the briefing so
-"Sources: BBC, Al Jazeera, Reuters" still shows corroboration.
-**ASK USER:** Should dedup happen at ingest time (fewer DB rows) or at briefing generation
-time (keep all articles, just cluster them)? Ingest-time is simpler, generation-time
-preserves raw data.
-*Files:* `scraping/scheduler.py`, possibly new `analysis/dedup.py`
-- **Database migration framework**
-SQLite migrations have broken twice (body NOT NULL, FK corruption). Guessing schema from
-column names is fragile.
-*Implementation:* Add a `schema_version` table with a single integer. Each migration is
-a numbered function. On startup, run all migrations > current version sequentially.
-Wrap each in a transaction. Always use `PRAGMA legacy_alter_table = ON` for renames.
-*Files:* `storage/database.py`
-- **Automated tests**
-No tests exist. Migrations, parser, and scraping have all had bugs.
-*Implementation:* Use pytest. Priority test targets: (1) `_migrate()` on a fresh DB,
-(2) `_migrate()` on an old-schema DB, (3) `parse_briefing_response()` with good/bad/empty
-input, (4) `insert_article` / `insert_briefing` round-trip, (5) `score_severity` keywords.
-Use an in-memory SQLite DB for speed.
-*Files:* new `tests/` directory
-- **Parsing and scraping efficiency (light, one-at-a-time, tiered pull)**
-  Keep memory and CPU low: **pull one article at a time**, strip HTML to get plain text,
-  store cleaned data, then move to the next. Use only the cleaned data for briefing
-  generation — no holding dozens of full HTML docs in memory. **Tiered behaviour:**
-  - **Intermittent pull** from main (tier-1) sources on a schedule. For each item:
-    clean and check importance (severity/triage).
-  - **If high importance** (e.g. severity ≥ threshold): trigger a **"big pull"** — fetch
-    tier-2/3 as needed and **generate a briefing now** ("stuff is happening").
-  - **If lower importance:** pull, clean, store; **keep until next scheduled briefing time**.
-    No LLM call until the user's chosen time (e.g. morning brief or after-lunch brief).
-  This matches "sentinel then escalate" but makes explicit: don't batch-load HTML;
-  process stream-style so peak memory stays low.
-  *Files:* `scraping/fetchers.py`, `scraping/scheduler.py`, `storage/database.py`
-- **Parallel scraping with rate limiting**
-Sources are fetched serially. With 15+ sources this will be slow.
-*Implementation:* Use `concurrent.futures.ThreadPoolExecutor(max_workers=4)` in
-`scraping/fetchers.py`. Add a per-domain rate limiter (min 2s between requests to
-same domain). This is straightforward — the fetcher functions are already stateless.
-*Files:* `scraping/fetchers.py`
-- **Source health dashboard in settings**
-Users can't see which sources work and which are broken.
-*Implementation:* Add a `source_health` table (source_name, last_check, last_success,
-last_error, error_count, article_count). Update on each fetch. Add a new settings page
-tab showing a list of sources with green/yellow/red status indicators.
-*Files:* `storage/database.py`, `scraping/fetchers.py`, `ui/settings_dialog.py`
-- **Move model selector and briefing depth to settings**
-User requested: remove depth dropdown from header bar. Model dropdown stays in header.
-Depth becomes a default preference in Settings > AI Engine.
-*Implementation:* Remove depth_box from header bar in `_build_ui()`. Add an
-`Adw.ComboRow` for depth in `_build_ai_page()` of settings_dialog.py.
-*Files:* `ui/window.py`, `ui/settings_dialog.py`
-- **Briefing card right-click / action menu**
-User wants: click card to get options like "regenerate", "add depth", "find more info",
-"delete card".
-*Implementation:* Add a `Gtk.PopoverMenu` on right-click or long-press of `BriefingRow`.
-Actions: Regenerate (re-run briefing generation with same articles), Go Deeper (regenerate
-with extended depth), Find More (trigger targeted search), Delete, Mark Unread.
-*Files:* `ui/window.py`, `scraping/scheduler.py` (needs a regenerate-by-id method)
-- **Tags fully visible in briefing cards**  
-Tags get clipped by sidebar width. Cards need dynamic height.  
-*Note:* Already removed `min-height: 72px` from CSS. If tags still clip, the `tag_box`  
-may need `set_wrap(True)` via a `Gtk.FlowBox` instead of `Gtk.Box`, or limit to  
-displaying only the primary topic with a tooltip showing all.  
-**ASK USER:** Prefer wrapping tags (taller cards) or show 1 tag + tooltip?  
-*Files:* `ui/window.py`, `ui/style.css`
-- **Make sure a user cant spam update**, dont put too much pressure on the sites by scraping too often. - Figure out how much scraping is ok.
-- **Data retention: prevent app data from overflowing**
-  App data that can grow unbounded:
-  1. **Briefings** — one row per card; `summary`, `developments`, `context`, etc. can be large.
-     **Setting:** "Keep last N briefings". **Default 30** (standard). Options e.g. 30, 50, 100,
-     200, or Unlimited. Delete older briefings (oldest first). Run cleanup after each
-     scheduler cycle or once per day.
-  2. **Articles** — every scraped article; `full_text` is the main bloat. **Settings:** (a)
-     "Keep articles for X days" (e.g. 7, 30, 60, 90), and/or (b) "Keep max Y MB" of app
-     data (total DB or articles table). Clear downloaded/cleaned data after set time or
-     when over cap. Keep at least 7 days so "recent" and briefing view sources work.
-  3. **Conversations** — when a briefing is deleted, delete its conversations. No separate cap.
-  4. **user_topics, config, logs** — small; logs use rotation if file logging added.
+**Order of operations (reasoning):** Do **foundation** first (migration, parsing — both done; then tests so we don’t regress). Then **data path**: fix source reliability and scraping efficiency so we have good data; add parallel fetch + rate limiting + anti-spam. Then **bounds**: data retention so storage doesn’t grow unbounded. Then **visibility**: source health dashboard (depends on retry/health data). Then **dedup** (ingest-time, per your decision). **UX** last: window/sidebar resize (fix unusable resize, then lag), tags visible, settings reorg, card context menu. Within UX, fix blocking issues (resize) before polish (tags, menus).
 
-  *Implementation:* Settings > Data/Storage: (1) "Keep last N briefings" default **30**.
-  (2) "Keep articles for N days" (default 90). (3) Optional "Max app data size (MB)" —
-  when DB size exceeds, delete oldest articles (and briefings if needed) until under cap.
-  Config: `retention: { max_briefings: 30, article_days: 90, max_data_mb: 0 }` (0 = no cap).
-  Run cleanup after each cycle; VACUUM periodically.
-  *Files:* `storage/config.py`, `storage/database.py`, `ui/settings_dialog.py`, `scraping/scheduler.py`.
+- **1. Database migration framework** *(done)*
+  Schema changes were fragile; migrations have broken twice.
+  *Implementation:* Add `schema_version` table, numbered migrations, run on startup. Use `PRAGMA legacy_alter_table = ON` for renames.
+  *Files:* `storage/database.py`
+- **2. Robust LLM prompt parsing** *(done)*
+  If the model doesn’t produce exact `<<<MARKERS>>>`, all fields come back empty (e.g. StarCoder2:15B).
+  *Implementation:* Fallback chain in `parse_briefing_response()`; validate and don’t save empty briefings. See IMPLEMENTATION_ORDER Step 2.
+  *Files:* `analysis/briefing.py`
+- **3. Automated tests**
+  No tests exist. Migrations, parser, and scraping have all had bugs.
+  *Implementation:* Use pytest. Priority: migrations (fresh + old DB), `parse_briefing_response()` good/bad/empty, insert round-trip, `score_severity`. In-memory SQLite.
+  *Files:* new `tests/` directory
+- **4. Fix source reliability**
+  Reuters DNS fails, AP feed won’t parse. Only BBC and Al Jazeera work out of 4 tier-1 sources.
+  *Implementation:* Add more sources to `data/sources.yaml`. Retry (3 attempts, backoff) in `scraping/fetchers.py`. Per-source error count in DB; skip after 5 consecutive failures until next cycle.
+  *Files:* `data/sources.yaml`, `scraping/fetchers.py`, `storage/database.py`
+- **5. Parsing and scraping efficiency (light, one-at-a-time, tiered pull)**
+  Keep memory and CPU low: pull one article at a time, clean, store, then next. Tiered: sentinel → escalate to context/official on severity.
+  *Files:* `scraping/fetchers.py`, `scraping/scheduler.py`, `storage/database.py`
+- **6. Parallel scraping with rate limiting**
+  Sources fetched serially; with 15+ sources too slow.
+  *Implementation:* `ThreadPoolExecutor(max_workers=4)` in fetchers; per-domain rate limiter (e.g. 2s between same domain).
+  *Files:* `scraping/fetchers.py`
+- **7. Make sure a user can’t spam update**
+  Don’t put too much pressure on sites; figure out how much scraping is OK (intervals, max runs).
+- **8. Data retention: prevent app data from overflowing**
+  Briefings: keep last N (default 30). Articles: keep X days (e.g. 90), optional max MB. Conversations: delete with briefing. Config + cleanup after cycle; VACUUM periodically.
+  *Files:* `storage/config.py`, `storage/database.py`, `ui/settings_dialog.py`, `scraping/scheduler.py`
+- **9. Source health dashboard in settings**
+  Users can’t see which sources work or are broken.
+  *Implementation:* `source_health` table; update on each fetch; settings tab with green/yellow/red per source.
+  *Files:* `storage/database.py`, `scraping/fetchers.py`, `ui/settings_dialog.py`
+- **10. Article deduplication**
+  BBC and Al Jazeera cover same stories; LLM gets duplicates. *Decision:* Ingest-time: clean first, then dedup; differing facts/opinions → note in brief and affect Reliability.
+  *Implementation:* Dedup at ingest after cleaning; same facts/opinions → keep one; if differ, keep/note both.
+  *Files:* `scraping/scheduler.py`, possibly `analysis/dedup.py`
+- **11. Window not resizable by corner/edge drag**
+  App can’t be resized by dragging corner/edge; resizing via shortcut lags heavily.
+  *Implementation:* Ensure window `resizable`; no child consuming resize handle; throttle relayout/redraw during resize.
+  *Files:* `ui/window.py`, `ui/app.py`
+- **12. Sidebar resize lags heavily**
+  Dragging the pane divider causes severe lag.
+  *Implementation:* Min/max sidebar width; defer/throttle list updates during drag; no heavy work in resize path.
+  *Files:* `ui/window.py`
+- **13. Tags fully visible in briefing cards**
+  Tags get clipped by sidebar width; cards need dynamic height. *Decision:* Config option — show all tags or 1 row + mouseover.
+  *Files:* `ui/window.py`, `ui/style.css`
+- **14. Move model selector to settings only**
+  Remove model dropdown from header; model choice lives in Settings > AI Engine only. **Also to figure out:** what to do when a model is already loaded in Ollama (e.g. user's coding assistant); consider adopting a suitable smaller model as the default so GeoPulse doesn't conflict with other workloads.
+  *Files:* `ui/window.py`, `ui/settings_dialog.py`
+- **15. Briefing font and font size**
+  Let the user change the font and font size of briefing text (headline, body, sections). At least a few presets including **OpenDyslexic** for readability. GNOME/libadwaita typically ships with a set of standard fonts (e.g. Cantarell, Inter, system UI font); we can offer those plus OpenDyslexic if installed. Store choice in config; apply via CSS (e.g. `.body-text`, `.briefing-headline` use the selected font/size).
+  *Files:* `storage/config.py`, `ui/settings_dialog.py`, `ui/style.css` (or runtime CSS override)
+- **16. Briefing card right-click / action menu**
+  Options: regenerate, add depth, find more, delete, mark unread.
+  *Implementation:* `Gtk.PopoverMenu` on BriefingRow; actions call scheduler/DB as needed.
+  *Files:* `ui/window.py`, `scraping/scheduler.py`
+
+- **17. Model selection when another model is already loaded**
+  When Ollama already has a model loaded (e.g. user's coding assistant), GeoPulse should not force-switch or conflict. Options: (a) use whatever is loaded for this run and document it, (b) recommend a smaller default model (e.g. qwen3:4b, gemma3:4b) that can coexist or load on demand, (c) show a clear indicator in Settings when the active model differs from the configured default. Decide behavior and document in MODELS.md.
+  *Files:* `ollama_manager.py`, `ui/settings_dialog.py`, `MODELS.md`
 
 ---
 
 ## New Features
+
+- **X (Twitter) sources via Twikit**
+  Add tweets as a **separate source stream** (not part of RSS/sentinel). Use **[Twikit](https://github.com/d60/twikit)** (Python, no API key, login-based scraping; good for small scale).
+  *Account:* Create a dedicated X account for the app; use it only for Twikit login (username/email + password). Store credentials in config (or env) securely.
+  *Conservative usage:* **Max once every 30 minutes.** Follow a **select few accounts** only: OSINT accounts, world leaders, key official handles. No search spam, no trending abuse.
+  *Integration:*
+  - **Pull separately** from the main sentinel (don’t mix tweet fetch with RSS tier cycle). Run tweet fetch on its own timer (e.g. every 30 min).
+  - **Latest tweets** from the watched accounts are **integrated into the next briefing generation run** — i.e. when we run `_do_generate_briefing`, include the most recent tweet batch (e.g. last N tweets per account, or last 30 min window) alongside recent articles so the LLM can cite “X user @… said …” where relevant.
+  - Tweets are **not** sentinel in v1 (they don’t trigger escalation or breaking pull). Optionally later: treat high-signal accounts as sentinel (e.g. if @POTUS or @OSINT_handle posts, could trigger an earlier brief).
+  *Implementation:* New `scraping/x_fetcher.py` or `scraping/twikit_client.py`: Twikit client login (once or on demand), fetch user tweets for a list of screen names from config (`data/sources_x.yaml` or `config.x_accounts`). Normalize to article-like records (url, title=text snippet, source_name=@handle, published_at). Store in `articles` with a `source_type: x` or separate `tweets` table; scheduler merges recent tweets into article set passed to `generate_briefing`. Config: `x_enabled`, `x_interval_minutes` (30), `x_accounts` (list of @handles), credentials.
+  *Files:* New `scraping/x_fetcher.py` (or twikit_client), `data/sources_x.yaml` (or config section), `storage/config.py`, `storage/database.py` (if tweets table), `scraping/scheduler.py` (30 min timer + merge into briefing input).
 
 - **Event-based briefing generation (one card per event, not one card per roundup)**
   **Problem:** Currently one briefing card = one LLM call that aggregates ALL relevant
@@ -265,26 +232,30 @@ logic), `analysis/briefing.py` (update prompt template), `ui/window.py` (badge),
 **ASK USER:** Should the summary refresh be automatic or require user to click
 "Refresh summary"? Auto is smoother but uses more GPU time.
 
-- **News category tabs**
-Sidebar tabs for different news domains: Geopolitics (default), AI & Tech, Local News,
-Economics, etc. Each tab has its own sources, topics, and briefing stream.
-*Implementation:*
+- **News category tabs (Geopolitics, Tech, Local, Markets, Custom — each like its own program)**
+  Sidebar tabs: **Geopolitics** (default), **AI & Tech**, **Local News**, **Markets**, **Other/Custom**.
+  Tabs can be **enabled or disabled in settings** (e.g. only Geopolitics + Markets). Each tab is
+  treated **essentially as a separate program**: its own sources, topics, and **own briefing
+  schedule** (own sentinel interval, own briefing interval). Data is stored per category.
+  **Cross-tab reference:** Where relevant, data from one tab can be brought into another
+  when generating a brief (e.g. Markets data injected into a Geopolitics brief to show how
+  markets reacted to an event; or a Tech tab brief that references a Geopolitics event).
+  Relevance can be topic/entity overlap or explicit "include markets in geopolitics
+  briefs" option. **Context window max** (see below) applies when assembling the prompt
+  so we don't exceed the LLM limit when mixing articles + markets + cross-tab data.
 
-1. Add a `categories` table: id, name, icon, sort_order.
-2. Link sources and topics to categories (many-to-many via junction tables, or a
-  `category_id` FK on sources and user_topics).
-3. Briefings get a `category_id` FK.
-4. Sidebar gets a tab strip or `Gtk.StackSwitcher` above the briefing list. Switching
-  tabs filters the briefing list and changes which sources/topics are active.
-5. Scheduler runs separate cycles per category (or one cycle that routes articles to
-  the right category based on source).
-6. Default categories seeded on first run: "Geopolitics", "AI & Technology".
-  User can add/rename/remove in settings.
-
-**ASK USER:** Should each category have independent scraping intervals, or share the
-global schedule? Independent is more flexible but more complex.
-*Files:* `storage/database.py`, `data/sources.yaml` (add category field), `ui/window.py`,
-`ui/settings_dialog.py`, `scraping/scheduler.py`
+  *Implementation:*
+  1. `categories` table: id, name, icon, sort_order, enabled (default true).
+  2. Sources and topics linked to categories. Briefings have category_id.
+  3. Scheduler runs **separate cycles per category** (each category has its own timer or
+     slot in a single loop). Per-category config: sentinel_interval, briefing_interval.
+  4. When generating a brief for category C, optionally pull in **reference data** from
+     other categories (e.g. latest markets snapshot for Geopolitics; latest geopolitics
+     headlines for Markets). Cap total input size (context window max).
+  5. Default categories: Geopolitics, AI & Technology, Local News, Markets. User can
+     add/rename/remove and enable/disable in settings.
+  *Files:* `storage/database.py`, `storage/config.py`, `data/sources.yaml`, `ui/window.py`,
+  `ui/settings_dialog.py`, `scraping/scheduler.py`
 
 - **Source manager in settings**
 Full source browser with tier assignment (Tier 1: sentinel, Tier 2: context/analysis).
@@ -294,6 +265,40 @@ enabled toggle, health indicator (green/red dot). "Add Source" row at bottom wit
 entry + auto-detect (try RSS parsing the URL). Store custom sources in DB, merge with
 built-in sources at runtime.
 *Files:* `ui/settings_dialog.py`, `storage/database.py`, `scraping/fetchers.py`
+- **Markets watcher (currencies, commodities, indices, single names — feed into briefs)**
+  A **Markets** tab and data pipeline for geopolitically relevant market data. **Data to
+  fetch and store:** (1) **Currencies** — major pairs (e.g. USD/EUR, USD/JPY, USD/CNY,
+  RUB, etc.). (2) **Commodities / raw materials** — oil (Brent, WTI), gas, key metals
+  (e.g. copper, nickel). (3) **Indices** — S&P 500, tech-heavy indices, regional indices
+  as relevant. (4) **Single names** — tech companies individually, other relevant sectors;
+  collections (e.g. "big tech" basket). Data is **calculated/stored** (e.g. daily or
+  intraday snapshots with open/close/change); historical series so we can show "how
+  markets have responded" over time. **Goal:** Bring attention to how markets have
+  responded to events. When generating a brief (especially Geopolitics or Markets tab),
+  **inject this data into the mix** where applicable: e.g. "Oil up 3% since X; S&P
+  sector Y down." Markets data is **separate** (own storage, own fetch schedule) but
+  **where relevant**, historical and current data is included in the brief-generation
+  prompt so the LLM can reference it. Markets tab has its own briefing schedule (own
+  "program"); those briefs focus on market moves and can reference news from other tabs.
+  *Data sources:* Free/freemium APIs (e.g. Yahoo Finance, Alpha Vantage, or similar) or
+  scraped summary pages; avoid heavy or paid APIs unless necessary. Store in DB (e.g.
+  `market_snapshots` table: symbol, timestamp, open, high, low, close, volume, change_pct).
+  *Files:* New `scraping/markets.py` or `data/markets.py`, `storage/database.py`,
+  `analysis/briefing.py` (prompt builder includes optional markets snippet), `scraping/scheduler.py`
+  (markets fetch job + per-category brief gen that can pull in markets).
+- **Context window max (cap prompt size for brief generation)**
+  When building the prompt for brief generation we may include: many articles, markets
+  data, cross-tab reference data, and (later) historical context. **Cap total input**
+  so we don't exceed the model's context window (e.g. 8k–32k tokens depending on
+  model). Implementation: (1) Config or constant `max_briefing_context_tokens` (or
+  max chars, then approximate tokens). (2) When assembling the prompt (articles +
+  optional markets + optional cross-tab snippet), truncate or summarize: e.g. take
+  most recent/relevant articles up to a token budget, then append a short "markets
+  snapshot" and "cross-tab highlights" if enabled. (3) If over limit, drop oldest
+  articles or shorten article text (e.g. title + first N chars of summary only).
+  Prevents API errors and unstable output for long context.
+  *Files:* `storage/config.py`, `analysis/briefing.py` (prompt assembly), optionally
+  a small `analysis/context_budget.py` helper.
 - **"Go deeper" regeneration button**
 Replace the header bar depth dropdown. In the briefing view, replace "Read full analysis..."
 with a "Go Deeper" button that re-generates the briefing with extended depth.

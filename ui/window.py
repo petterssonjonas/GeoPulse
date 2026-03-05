@@ -5,6 +5,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib, Gdk, Pango
 
 import logging
+import json
+import threading
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
@@ -13,8 +15,10 @@ logger = logging.getLogger(__name__)
 
 import storage.database as db
 from storage.config import Config, is_first_run, load_default_topics, ensure_dirs
+from providers import create_provider
 from ollama_manager import OllamaManager
 from scraping.scheduler import SmartScheduler
+from analysis.briefing import generate_briefing
 from gpu_stats import get_gpu_stats
 from ui.welcome_view import WelcomeView
 from ui.quiet_view import QuietView
@@ -126,6 +130,7 @@ class GeoPulseWindow(Adw.ApplicationWindow):
 
         ensure_dirs()
         db.init_db()
+        db.run_retention_cleanup()
         db.seed_default_topics(load_default_topics())
 
         self._build_ui()
@@ -166,15 +171,6 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         self._ai_dot.add_css_class("ai-dot-idle")
         ai_box.append(self._ai_dot)
 
-        self._model_string_list = Gtk.StringList()
-        self._model_drop = Gtk.DropDown(model=self._model_string_list)
-        self._model_drop.set_tooltip_text("Active LLM model")
-        self._model_drop.add_css_class("flat")
-        self._model_drop.set_sensitive(False)
-        self._model_drop_handler = self._model_drop.connect(
-            "notify::selected", self._on_model_dropdown_changed)
-        ai_box.append(self._model_drop)
-
         sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
         sep.set_margin_top(8)
         sep.set_margin_bottom(8)
@@ -185,23 +181,6 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         ai_box.append(self._gpu_lbl)
 
         header.pack_start(ai_box)
-
-        # ── RIGHT: depth selector + buttons ─────────────────────────────────
-        depth_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        depth_lbl = Gtk.Label(label="Depth")
-        depth_lbl.add_css_class("dim-label")
-        depth_box.append(depth_lbl)
-        depth_model = Gtk.StringList.new(["Brief", "Extended"])
-        self._depth_drop = Gtk.DropDown(model=depth_model)
-        self._depth_drop.set_tooltip_text(
-            "Brief: concise 5-paragraph briefing\n"
-            "Extended: in-depth 10-15 paragraph analysis"
-        )
-        self._depth_drop.add_css_class("flat")
-        self._depth_drop.set_selected(1 if Config.briefing_depth() == "extended" else 0)
-        self._depth_drop.connect("notify::selected", self._on_depth_changed)
-        depth_box.append(self._depth_drop)
-        header.pack_end(depth_box)
 
         settings_btn = Gtk.Button(icon_name="preferences-system-symbolic", tooltip_text="Settings")
         settings_btn.connect("clicked", lambda b: open_settings(self))
@@ -293,7 +272,11 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         self._quiet_view = QuietView(on_search=self._on_search_now)
         self._content_stack.add_named(self._quiet_view, "quiet")
 
-        self._briefing_view = BriefingDetailView(on_start_chat=self._on_start_chat)
+        self._briefing_view = BriefingDetailView(
+            on_start_chat=self._on_start_chat,
+            run_follow_up=self._run_follow_up,
+            on_go_deeper=self._on_go_deeper,
+        )
         self._content_stack.add_named(self._briefing_view, "briefing")
 
         self._chat_view = ChatView(on_back=lambda: self._content_stack.set_visible_child_name("briefing"))
@@ -315,7 +298,6 @@ class GeoPulseWindow(Adw.ApplicationWindow):
             self._ollama.start()
 
         self._detect_active_model()
-        self._populate_model_dropdown()
         self._update_ai_indicator()
         GLib.timeout_add(2000, self._poll_gpu_stats)
 
@@ -348,45 +330,6 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         logger.info(f"Ollama already has {running[0]} loaded — using it instead of {configured}")
         Config.update(llm={"model": running[0]})
 
-    def _populate_model_dropdown(self):
-        self._model_drop.handler_block(self._model_drop_handler)
-        while self._model_string_list.get_n_items():
-            self._model_string_list.remove(0)
-
-        provider = Config.llm().get("provider", "ollama")
-        if provider == "ollama" and self._ollama.is_running():
-            installed = self._ollama.list_models()
-        else:
-            installed = []
-
-        active_model = Config.llm().get("model", "")
-        if not installed:
-            self._model_string_list.append(active_model or "No models")
-            self._model_drop.set_selected(0)
-            self._model_drop.set_sensitive(False)
-        else:
-            if active_model and active_model not in installed:
-                installed.insert(0, active_model)
-            self._installed_models = installed
-            for m in installed:
-                self._model_string_list.append(m)
-            try:
-                idx = installed.index(active_model)
-            except ValueError:
-                idx = 0
-            self._model_drop.set_selected(idx)
-            self._model_drop.set_sensitive(True)
-        self._model_drop.handler_unblock(self._model_drop_handler)
-
-    def _on_model_dropdown_changed(self, drop, _param):
-        idx = drop.get_selected()
-        models = getattr(self, "_installed_models", [])
-        if idx < len(models):
-            new_model = models[idx]
-            Config.update(llm={"model": new_model})
-            logger.info(f"Switched active model to {new_model}")
-            self._update_ai_indicator()
-
     def _update_ai_indicator(self):
         llm_cfg = Config.llm()
         provider = llm_cfg.get("provider", "ollama")
@@ -415,6 +358,104 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         else:
             self._update_ai_indicator()
 
+    def _run_follow_up(self, briefing_id: int, question: str, on_chunk, on_done):
+        """Run LLM follow-up for this briefing; call on_chunk(text) and on_done() from main thread."""
+        briefing = db.get_briefing(briefing_id)
+        if not briefing:
+            GLib.idle_add(on_done)
+            return
+        self._set_ai_thinking(True)
+        provider = create_provider()
+        articles = db.get_articles_for_briefing(briefing_id)
+        sources = ", ".join(set(a["source_name"] for a in articles[:8]))
+        context = (
+            f"You are a geopolitical intelligence analyst. The user is asking follow-up "
+            f"questions about this briefing:\n\n"
+            f"HEADLINE: {briefing.get('headline', '')}\n"
+            f"SUMMARY: {briefing.get('summary', '')}\n\n"
+            f"{briefing.get('developments', '')}\n\n"
+            f"{briefing.get('context', '')}\n\n"
+            f"Sources: {sources}\n\n"
+            f"Answer with analytical depth. Be direct and concise."
+        )
+        conv = db.get_conversation_by_briefing(briefing_id)
+        if conv:
+            conv_id = conv["id"]
+            messages = conv["messages"]
+        else:
+            conv_id = db.create_conversation(briefing_id)
+            db.append_message(conv_id, "system", context)
+            messages = [{"role": "system", "content": context}]
+        db.append_message(conv_id, "user", question)
+        conv = db.get_conversation(conv_id)
+        messages = conv["messages"] if conv else []
+
+        def stream():
+            full = []
+            try:
+                for chunk in provider.stream_chat(messages):
+                    full.append(chunk)
+                    GLib.idle_add(on_chunk, chunk)
+            except Exception as e:
+                err_text = f"\n\n[Error: {e}]"
+                full.append(err_text)
+                GLib.idle_add(on_chunk, err_text)
+            finally:
+                db.append_message(conv_id, "assistant", "".join(full))
+                GLib.idle_add(on_done)
+                GLib.idle_add(self._set_ai_thinking, False)
+
+        threading.Thread(target=stream, daemon=True).start()
+
+    def _on_go_deeper(self, briefing_id: int):
+        """Regenerate this briefing with extended depth in a background thread."""
+        briefing = db.get_briefing(briefing_id)
+        if not briefing:
+            return
+        articles = db.get_articles_for_briefing(briefing_id)
+        if not articles:
+            self._toast_overlay.add_toast(Adw.Toast(title="No articles for this briefing", timeout=3))
+            return
+        self._toast_overlay.add_toast(Adw.Toast(title="Regenerating with extended depth…", timeout=2))
+        topics = [t["name"] for t in db.get_user_topics()]
+        self._set_ai_thinking(True)
+
+        def run():
+            err = None
+            try:
+                provider = create_provider()
+                new_briefing = generate_briefing(articles, topics, provider, depth="extended")
+                new_briefing["briefing_type"] = briefing.get("briefing_type", "scheduled")
+                new_briefing["source_count"] = len(set(a.get("source_name", "") for a in articles))
+                all_topics = []
+                for a in articles[:20]:
+                    t = a.get("topics")
+                    if isinstance(t, list):
+                        all_topics.extend(t)
+                    elif isinstance(t, str) and t:
+                        try:
+                            all_topics.extend(json.loads(t))
+                        except Exception:
+                            pass
+                new_briefing["topics"] = list(dict.fromkeys(all_topics))[:5]
+                db.update_briefing(briefing_id, new_briefing)
+            except Exception as e:
+                err = str(e)
+                logger.exception("Go deeper failed")
+            finally:
+                def done():
+                    self._set_ai_thinking(False)
+                    if err:
+                        self._toast_overlay.add_toast(Adw.Toast(title=f"Go deeper failed: {err[:80]}", timeout=5))
+                    else:
+                        updated = db.get_briefing(briefing_id)
+                        if updated and self._content_stack.get_visible_child_name() == "briefing":
+                            self._briefing_view.update_content(updated)
+                        self._toast_overlay.add_toast(Adw.Toast(title="Briefing updated with extended depth", timeout=3))
+                GLib.idle_add(done)
+
+        threading.Thread(target=run, daemon=True).start()
+
     def _poll_gpu_stats(self):
         stats = get_gpu_stats()
         if stats:
@@ -428,10 +469,6 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         else:
             self._gpu_lbl.set_label("")
         return True  # keep polling
-
-    def _on_depth_changed(self, drop, _param):
-        depth = "extended" if drop.get_selected() == 1 else "brief"
-        Config.update(briefing={"depth": depth})
 
     def _on_setup_complete(self):
         from storage.config import save_config, Config as Cfg
@@ -513,6 +550,11 @@ class GeoPulseWindow(Adw.ApplicationWindow):
 
     def _on_briefing_selected(self, listbox, row):
         if row is None or not isinstance(row, BriefingRow):
+            return
+        # Avoid reload loop: if we're already showing this briefing, only switch to briefing view
+        if self._briefing_view._current_briefing and self._briefing_view._current_briefing.get("id") == row.briefing_id:
+            self._content_stack.set_visible_child_name("briefing")
+            GLib.idle_add(self._update_unread_badge)
             return
         briefing = db.get_briefing(row.briefing_id)
         if briefing:
