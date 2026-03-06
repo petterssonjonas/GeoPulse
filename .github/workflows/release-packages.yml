@@ -139,7 +139,7 @@ jobs:
           mv packaging/io.geopulse.app.json.tmp packaging/io.geopulse.app.json
       - name: Build Flatpak
         run: |
-          flatpak-builder --force-clean --user --share=network build-dir packaging/io.geopulse.app.json
+          flatpak-builder --force-clean --user build-dir packaging/io.geopulse.app.json
       - name: Export Flatpak bundle
         run: |
           V="${{ needs.version.outputs.version }}"

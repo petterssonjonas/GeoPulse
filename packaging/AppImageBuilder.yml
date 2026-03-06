@@ -3,7 +3,6 @@
 # Run from repo root: appimage-builder --recipe packaging/AppImageBuilder.yml
 
 version: 1
-name: geopulse
 script: |
   # Install Python deps into AppDir
   pip3 install --target AppDir/usr/lib/geopulse/vendor -r requirements.txt
