@@ -23,11 +23,12 @@ def get_version() -> str:
 def main():
     version = get_version()
 
-    # packaging/geopulse.spec: Version:        X.Y.Z
+    # packaging/geopulse.spec: Version:        X.Y.Z and %changelog first line
     spec = REPO_ROOT / "packaging" / "geopulse.spec"
     if spec.exists():
         s = spec.read_text()
         s = re.sub(r"^Version:\s*\S+", f"Version:        {version}", s, count=1, flags=re.MULTILINE)
+        s = re.sub(r"(\* .+ - )[\d.]+\-\d+", rf"\g<1>{version}-1", s, count=1)
         spec.write_text(s)
 
     # packaging/AppImageBuilder.yml: app_info.version (not the top-level "version: 1")

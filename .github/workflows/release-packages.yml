@@ -43,6 +43,7 @@ jobs:
         run: |
           V="${{ needs.version.outputs.version }}"
           sed -i "s/^Version:.*/Version:        $V/" packaging/geopulse.spec
+          sed -i "s/^\\(\\* .* - \\)[0-9.]*-[0-9]*/\\1${V}-1/" packaging/geopulse.spec
       - name: Install build deps
         run: dnf install -y rpm-build python3-devel gtk4 libadwaita libnotify python3-requests python3-pyyaml python3-beautifulsoup4 python3-lxml python3-dateutil
       - name: Create tarball
@@ -130,7 +131,9 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name }}"
           V="${{ needs.version.outputs.version }}"
-          curl -sL "https://github.com/${{ github.repository }}/releases/download/$TAG/geopulse-$V.tar.gz" -o tarball.tar.gz
+          REPO="${{ github.repository }}"
+          # Use the same archive URL flatpak-builder will use (not the release asset) so checksums match
+          curl -sL "https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz" -o tarball.tar.gz
           SHA256=$(sha256sum tarball.tar.gz | awk '{print $1}')
           jq --arg s "$SHA256" '.modules[0].sources[0].sha256 = $s' packaging/io.geopulse.app.json > packaging/io.geopulse.app.json.tmp
           mv packaging/io.geopulse.app.json.tmp packaging/io.geopulse.app.json

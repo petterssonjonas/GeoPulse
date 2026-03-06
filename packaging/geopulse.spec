@@ -50,5 +50,5 @@ chmod 755 %{buildroot}%{_bindir}/geopulse
 %{_datadir}/geopulse/
 
 %changelog
-* Sun Mar 2026 - 0.90.0-1
+* Sun Mar 01 2026 - 0.90.3-1
 - First beta release (RPM package)
