@@ -3,6 +3,7 @@
 
 Usage: ./scripts/sync-version.py
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -43,7 +44,18 @@ def main():
         s = re.sub(r"\*Version\s+[0-9]+\.[0-9]+\.[0-9]+\s*\(beta\)", f"*Version {version} (beta)", s, count=1)
         readme.write_text(s)
 
-    print(f"Synced version to {version} in packaging/geopulse.spec, packaging/AppImageBuilder.yml, README.md")
+    # packaging/io.geopulse.app.json: archive URL and dest-filename (CI still overwrites at build time)
+    flatpak_json = REPO_ROOT / "packaging" / "io.geopulse.app.json"
+    if flatpak_json.exists():
+        data = json.loads(flatpak_json.read_text())
+        if data.get("modules") and data["modules"][0].get("sources"):
+            data["modules"][0]["sources"][0]["url"] = (
+                f"https://github.com/petterssonjonas/GeoPulse/archive/refs/tags/v{version}.tar.gz"
+            )
+            data["modules"][0]["sources"][0]["dest-filename"] = f"geopulse-{version}.tar.gz"
+            flatpak_json.write_text(json.dumps(data, indent=2) + "\n")
+
+    print(f"Synced version to {version} in packaging/geopulse.spec, packaging/AppImageBuilder.yml, README.md, packaging/io.geopulse.app.json")
 
 
 if __name__ == "__main__":
