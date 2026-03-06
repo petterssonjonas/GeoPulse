@@ -20,7 +20,7 @@ AppDir:
     id: io.geopulse.app
     name: GeoPulse
     icon: utilities-terminal  # placeholder; add a .png icon to the repo and reference it
-    version: '0.90.1'
+    version: '0.90.2'
     exec: usr/bin/geopulse
   apt:
     arch: amd64
