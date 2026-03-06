@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Callable
 from storage.config import get_db_path, Config
 
 # Current schema version after all migrations. Bump when adding a new migration.
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def _now() -> str:
@@ -56,7 +56,8 @@ def init_db():
             suggested_questions TEXT,
             source_count        INTEGER DEFAULT 0,
             is_read             INTEGER DEFAULT 0,
-            briefing_type       TEXT    DEFAULT 'scheduled'
+            briefing_type       TEXT    DEFAULT 'scheduled',
+            parent_briefing_id  INTEGER REFERENCES briefings(id)
         );
 
         CREATE TABLE IF NOT EXISTS conversations (
@@ -212,9 +213,18 @@ def _migration_2(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_3(conn: sqlite3.Connection) -> None:
+    """Add parent_briefing_id for update sub-cards that attach to an earlier briefing."""
+    try:
+        conn.execute("ALTER TABLE briefings ADD COLUMN parent_briefing_id INTEGER REFERENCES briefings(id)")
+    except sqlite3.OperationalError:
+        pass
+
+
 _MIGRATIONS: List[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migration_1),
     (2, _migration_2),
+    (3, _migration_3),
 ]
 
 
@@ -336,12 +346,13 @@ def set_source_check_time(tier: int, checked_at: str = None) -> None:
 def insert_briefing(briefing: dict) -> int:
     conn = get_connection()
     try:
+        parent_id = briefing.get("parent_briefing_id")
         cur = conn.execute("""
             INSERT INTO briefings
                 (created_at, headline, summary, developments, context, actors,
                  outlook, watch_indicators, severity, confidence, article_ids,
-                 suggested_questions, source_count, briefing_type, topics)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 suggested_questions, source_count, briefing_type, topics, parent_briefing_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             _now(), briefing["headline"], briefing["summary"],
             briefing.get("developments", ""),
@@ -356,6 +367,7 @@ def insert_briefing(briefing: dict) -> int:
             briefing.get("source_count", 0),
             briefing.get("briefing_type", "scheduled"),
             json.dumps(briefing.get("topics", [])),
+            parent_id,
         ))
         conn.commit()
         return cur.lastrowid
@@ -393,6 +405,26 @@ def get_briefings(limit: int = 50, unread_only: bool = False) -> List[Dict]:
         conn.close()
 
 
+def get_recent_briefings_for_novelty(limit: int = 5) -> List[Dict]:
+    """Return the most recent main briefings (no update sub-cards) for novelty check. Includes id, headline, summary."""
+    conn = get_connection()
+    try:
+        # SQLite: parent_briefing_id may not exist before migration 3
+        try:
+            rows = conn.execute(
+                "SELECT id, created_at, headline, summary FROM briefings WHERE parent_briefing_id IS NULL ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = conn.execute(
+                "SELECT id, created_at, headline, summary FROM briefings ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_briefing(briefing_id: int) -> Optional[Dict]:
     conn = get_connection()
     try:
@@ -406,6 +438,26 @@ def mark_briefing_read(briefing_id: int):
     conn = get_connection()
     try:
         conn.execute("UPDATE briefings SET is_read = 1 WHERE id = ?", (briefing_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_briefing_unread(briefing_id: int):
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE briefings SET is_read = 0 WHERE id = ?", (briefing_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_briefing(briefing_id: int) -> None:
+    """Remove a briefing and its conversations."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM conversations WHERE briefing_id = ?", (briefing_id,))
+        conn.execute("DELETE FROM briefings WHERE id = ?", (briefing_id,))
         conn.commit()
     finally:
         conn.close()

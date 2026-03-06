@@ -22,6 +22,20 @@
     opacity: 0.65;
 }
 
+/* Update sub-cards (side-arrow under a main briefing) */
+.briefing-row-update {
+    margin-start: 8px;
+    opacity: 0.92;
+}
+.briefing-update-meta {
+    font-size: 0.66em;
+    opacity: 0.7;
+}
+.briefing-update-headline {
+    font-size: 0.9em;
+    font-weight: 600;
+}
+
 /* ── Severity colors ────────────────────────────────────────────────────── */
 
 /* Sidebar left bar (4px colored strip) */
@@ -91,6 +105,17 @@
     border: 1px solid alpha(@accent_color, 0.35);
     background: alpha(@accent_color, 0.08);
     opacity: 0.75;
+}
+/* Sidebar: tags only as wide as their text, flow left-to-right and wrap */
+.sidebar-tag-flow flowboxchild {
+    min-width: 0;
+}
+.sidebar-tag-flow .briefing-topic-tag {
+    margin: 0;
+}
+/* Detail view: tags under headline, same left-to-right wrap */
+.briefing-detail-tags flowboxchild {
+    min-width: 0;
 }
 .briefing-topic-tag-more {
     font-size: 0.66em;

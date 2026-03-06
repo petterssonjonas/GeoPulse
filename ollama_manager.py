@@ -8,6 +8,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_BASE_URL = "http://localhost:11434"
+
 RECOMMENDED_MODELS = [
     {"name": "qwen3:8b",    "vram": "~5 GB",  "desc": "Best balance of speed and quality (GPU)"},
     {"name": "qwen3:4b",    "vram": "~3 GB",  "desc": "Fast triage and lighter analysis"},
@@ -20,8 +22,8 @@ RECOMMENDED_MODELS = [
 
 
 class OllamaManager:
-    def __init__(self, base_url: str = "http://localhost:11434"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str = None):
+        self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._process = None
 
     def is_installed(self) -> bool:
@@ -31,7 +33,8 @@ class OllamaManager:
         try:
             r = requests.get(f"{self.base_url}/", timeout=3)
             return r.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug("Ollama is_running check failed: %s", e)
             return False
 
     def start(self) -> bool:
@@ -72,7 +75,8 @@ class OllamaManager:
             r = requests.get(f"{self.base_url}/api/tags", timeout=5)
             r.raise_for_status()
             return [m["name"] for m in r.json().get("models", [])]
-        except Exception:
+        except Exception as e:
+            logger.debug("Ollama list_models failed: %s", e)
             return []
 
     def get_running_models(self) -> list:
@@ -81,7 +85,8 @@ class OllamaManager:
             r = requests.get(f"{self.base_url}/api/ps", timeout=5)
             r.raise_for_status()
             return [m["name"] for m in r.json().get("models", [])]
-        except Exception:
+        except Exception as e:
+            logger.debug("Ollama get_running_models failed: %s", e)
             return []
 
     def is_model_available(self, model: str) -> bool:

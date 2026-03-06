@@ -23,6 +23,24 @@ def _strip_md(text):
     return text.strip()
 
 
+def _md_to_pango(text: str) -> str:
+    """Convert a safe subset of markdown to Pango markup (bold, italic, ## subheadings, bullets)."""
+    if not text:
+        return ""
+    s = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"\*([^*]+)\*", r"<i>\1</i>", s)
+    s = re.sub(r"^[-*]\s+", "• ", s, flags=re.MULTILINE)
+    s = re.sub(r"^\d+[.)]\s+", "• ", s, flags=re.MULTILINE)
+
+    def sub_heading(m):
+        content = m.group(1).strip()
+        return f"<b><big>{content}</big></b>"
+    s = re.sub(r"^##\s+(.+)$", sub_heading, s, flags=re.MULTILINE)
+    s = re.sub(r"^###\s+(.+)$", r"<b>\1</b>", s, flags=re.MULTILINE)
+    return s.strip()
+
+
 def _lbl(text, css=None, wrap=False, selectable=False):
     lbl = Gtk.Label(label=text, halign=Gtk.Align.START, wrap=wrap, selectable=selectable)
     lbl.set_xalign(0)
@@ -33,8 +51,10 @@ def _lbl(text, css=None, wrap=False, selectable=False):
 
 
 def _body(text):
-    """Wrapping selectable body text label."""
-    lbl = Gtk.Label(label=_strip_md(text))
+    """Wrapping selectable body text label. Renders markdown as Pango markup (bold, italic, ##, bullets)."""
+    markup = _md_to_pango(text)
+    lbl = Gtk.Label(label=markup)
+    lbl.set_use_markup(True)
     lbl.set_wrap(True)
     lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
     lbl.set_xalign(0)
@@ -235,7 +255,34 @@ class BriefingDetailView(Gtk.Box):
         meta.append(_lbl(f"· {_format_time_ago(briefing.get('created_at', ''))}", "meta-label"))
         widgets.append(meta)
         headline = briefing.get("headline", "").strip()
-        widgets.append(_lbl(headline or "Untitled Briefing", "briefing-headline", wrap=True, selectable=True))
+        headline_lbl = Gtk.Label(label=_md_to_pango(headline) or "Untitled Briefing")
+        headline_lbl.set_use_markup(True)
+        headline_lbl.set_wrap(True)
+        headline_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        headline_lbl.set_xalign(0)
+        headline_lbl.set_halign(Gtk.Align.START)
+        headline_lbl.set_selectable(True)
+        headline_lbl.add_css_class("briefing-headline")
+        widgets.append(headline_lbl)
+        topics = briefing.get("topics") or []
+        if topics:
+            tag_flow = Gtk.FlowBox()
+            tag_flow.set_selection_mode(Gtk.SelectionMode.NONE)
+            tag_flow.set_homogeneous(False)
+            tag_flow.set_max_children_per_line(20)
+            tag_flow.set_min_children_per_line(1)
+            tag_flow.set_row_spacing(6)
+            tag_flow.set_column_spacing(8)
+            tag_flow.add_css_class("briefing-detail-tags")
+            tag_flow.set_margin_top(6)
+            for topic_name in topics[:5]:
+                tag = Gtk.Label(label=topic_name)
+                tag.set_use_markup(False)
+                tag.add_css_class("briefing-topic-tag")
+                tag.set_ellipsize(Pango.EllipsizeMode.END)
+                tag.set_halign(Gtk.Align.START)
+                tag_flow.append(tag)
+            widgets.append(tag_flow)
         widgets.append(Gtk.Separator())
         summary = briefing.get("summary", "")
         if summary:

@@ -6,12 +6,20 @@ CONFIG_DIR = Path.home() / ".config" / "geopulse"
 DATA_DIR = Path.home() / ".local" / "share" / "geopulse"
 _PKG_DATA = Path(__file__).parent.parent / "data"
 
+# Appearance: briefing font size scale (clamp everywhere to avoid drift)
+BRIEFING_FONT_SIZE_MIN = 0.9
+BRIEFING_FONT_SIZE_MAX = 1.4
+BRIEFING_FONT_SIZE_DEFAULT = 1.0
+
+# LLM: default Ollama base URL (single source of truth)
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+
 DEFAULT_CONFIG = {
     "llm": {
         "provider": "ollama",
         "model": "qwen3:8b",
         "triage_model": "",
-        "base_url": "http://localhost:11434",
+        "base_url": OLLAMA_DEFAULT_BASE_URL,
         "api_key": "",
         "temperature": 0.3,
     },
@@ -26,6 +34,7 @@ DEFAULT_CONFIG = {
     "notifications": {
         "enabled": True,
         "min_severity": 3,
+        "sound_on_briefing": False,
     },
     "ollama": {
         "auto_start": True,
@@ -37,6 +46,15 @@ DEFAULT_CONFIG = {
     "retention": {
         "max_briefings": 30,
         "article_retention_days": 14,
+    },
+    "appearance": {
+        "theme": "system",       # "system" | "light" | "dark"
+        "briefing_font": "",      # "" = system default, or font family name
+        "briefing_font_size": BRIEFING_FONT_SIZE_DEFAULT,  # scale factor BRIEFING_FONT_SIZE_MIN–MAX
+    },
+    "header": {
+        "show_gpu_status": True,   # GPU/VRAM or CPU/RAM when no GPU
+        "show_model_name": True,   # current model in parentheses
     },
 }
 
@@ -83,7 +101,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def load_config() -> dict:
     config_path = CONFIG_DIR / "config.yaml"
     if config_path.exists():
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             user = yaml.safe_load(f) or {}
         return _deep_merge(DEFAULT_CONFIG, user)
     return DEFAULT_CONFIG.copy()
@@ -91,7 +109,7 @@ def load_config() -> dict:
 
 def save_config(data: dict):
     ensure_dirs()
-    with open(CONFIG_DIR / "config.yaml", "w") as f:
+    with open(CONFIG_DIR / "config.yaml", "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
@@ -99,7 +117,7 @@ def load_sources(tier: int = None) -> list:
     path = _PKG_DATA / "sources.yaml"
     if not path.exists():
         return []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     sources = [s for s in data.get("sources", []) if s.get("enabled", True)]
     if tier is not None:
@@ -111,13 +129,13 @@ def load_default_topics() -> list:
     path = _PKG_DATA / "topics.yaml"
     if not path.exists():
         return []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return data.get("topics", [])
 
 
 class Config:
-    """Singleton config accessor."""
+    """Singleton config accessor. Do not log .get() or any section containing api_key."""
     _data = None
 
     @classmethod
@@ -165,3 +183,11 @@ class Config:
     @classmethod
     def retention(cls) -> dict:
         return cls.get().get("retention", {})
+
+    @classmethod
+    def appearance(cls) -> dict:
+        return cls.get().get("appearance", {})
+
+    @classmethod
+    def header(cls) -> dict:
+        return cls.get().get("header", {})

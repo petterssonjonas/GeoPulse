@@ -1,16 +1,20 @@
 # 📡 GeoPulse
 
-**Open source geopolitical intelligence platform. Runs fully local. No data leaves your machine.**
+**Open source geopolitical intelligence platform. Runs fully local or via cloud API.**
 
-A background service ingests curated news sources and official government feeds, scores severity, generates analytically rich briefings using a local LLM (Ollama), and delivers them as a native GNOME desktop application with inline Q&A.
+*Version 0.90.0 (beta) — [GNOME-style versioning](https://handbook.gnome.org/release-planning.html): 0.x = pre-1.0 beta, 1.0 = first stable.*
+
+A background service ingests curated news sources, transcripts of videos and podcasts, official government feeds and more. It Scores severity, generates analytically rich briefings using a local LLM (Ollama serve, app handles AI loading), and delivers them as a native GNOME desktop application with inline Q&A.
 
 ---
 
 ## Preview
 
+
 | Briefing list & detail | Q&A chat with local LLM |
-|------------------------|-------------------------|
-| ![GeoPulse briefing view](Geopulse1.png) | ![GeoPulse Q&A chat](Geopulse2.png) |
+| ---------------------- | ----------------------- |
+| GeoPulse briefing view | GeoPulse Q&A chat       |
+
 
 *Severity-ranked briefings in the sidebar; click to read the full digest. Ask follow-up questions in context with your local model (Ollama).*
 
@@ -30,13 +34,15 @@ A background service ingests curated news sources and official government feeds,
 
 ## Requirements
 
-| Component | Version |
-|-----------|---------|
-| Python | 3.10+ |
-| GTK4 | 4.0+ |
-| Libadwaita | 1.0+ |
-| Ollama | Any recent |
-| libnotify | Any |
+
+| Component  | Version    |
+| ---------- | ---------- |
+| Python     | 3.10+      |
+| GTK4       | 4.0+       |
+| Libadwaita | 1.0+       |
+| Ollama     | Any recent |
+| libnotify  | Any        |
+
 
 ---
 
@@ -45,16 +51,19 @@ A background service ingests curated news sources and official government feeds,
 ### 1. System packages
 
 **Ubuntu/Debian:**
+
 ```bash
 sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libnotify-bin python3-venv
 ```
 
 **Fedora:**
+
 ```bash
 sudo dnf install python3-gobject gtk4 libadwaita libnotify
 ```
 
 **Arch:**
+
 ```bash
 sudo pacman -S python-gobject gtk4 libadwaita libnotify
 ```
@@ -62,6 +71,7 @@ sudo pacman -S python-gobject gtk4 libadwaita libnotify
 ### 2. Ollama
 
 Install from [ollama.ai](https://ollama.ai) and pull your model:
+
 ```bash
 ollama pull qwen3:12b
 # or for lighter use:
@@ -81,23 +91,28 @@ cd geopulse
 ## Usage
 
 ### Run everything (recommended)
+
 ```bash
 ./setup.sh --run-both
 ```
+
 This starts the background service then opens the UI. The service keeps running in the background fetching and generating briefings.
 
 ### Service only (background daemon)
+
 ```bash
 ./setup.sh --run-service
 # or via systemd (see below)
 ```
 
 ### UI only (reads from existing DB)
+
 ```bash
 ./setup.sh --run-app
 ```
 
 ### Debug / CLI tools
+
 ```bash
 python main.py --fetch       # Run one ingestion cycle
 python main.py --generate    # Generate one briefing from recent articles
@@ -112,6 +127,7 @@ python main.py --briefing 5  # Open app at briefing #5
 Config lives at `~/.config/geopulse/config.yaml` (created on first run).
 
 ### Change LLM model
+
 ```yaml
 llm:
   provider: ollama
@@ -120,6 +136,7 @@ llm:
 ```
 
 ### Use a cloud API instead
+
 ```yaml
 llm:
   provider: openai
@@ -135,6 +152,7 @@ llm:
 ```
 
 ### Add a source
+
 ```yaml
 sources:
   - name: Kyiv Independent
@@ -147,6 +165,7 @@ sources:
 ```
 
 ### Adjust schedule
+
 ```yaml
 schedule:
   fetch_interval_minutes: 15        # how often to check sources
@@ -177,6 +196,7 @@ WantedBy=default.target
 ```
 
 Then:
+
 ```bash
 systemctl --user enable geopulse
 systemctl --user start geopulse
@@ -188,20 +208,20 @@ systemctl --user start geopulse
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Background Service (service.py)                     │
+│  Background Service (service.py)                    │
 │  ┌──────────┐  ┌────────────┐  ┌─────────────────┐  │
 │  │ Scraper  │→ │  SQLite DB │← │  LLM (Ollama)   │  │
 │  │ (RSS +   │  │ articles   │  │  Briefing gen   │  │
 │  │  HTML)   │  │ briefings  │  │  Severity score │  │
 │  └──────────┘  │ convos     │  └─────────────────┘  │
-│                └──────┬─────┘                        │
-│                       │ notify-send                  │
-└───────────────────────┼──────────────────────────────┘
+│                └──────┬─────┘                       │
+│                       │ notify-send                 │
+└───────────────────────┼─────────────────────────────┘
                         ↓
               [Desktop Notification]
                         ↓
 ┌─────────────────────────────────────────────────────┐
-│  GTK4 App (main.py + ui/)                            │
+│  GTK4 App (main.py + ui/)                           │
 │  ┌─────────────┐  ┌──────────────────────────────┐  │
 │  │ Briefing    │  │  Detail View                 │  │
 │  │ Sidebar     │→ │  Headline, Summary, Body     │  │
@@ -234,14 +254,32 @@ Then add it to the `create_provider()` factory.
 
 ## Roadmap
 
-- [ ] Systemd user service integration
+- [x] Recognize if system has ollama, instructions if not. Loads selected model on demand.
+- [ ] Implement system scanning to determine the mest AI model to use, and suggest downloading it. 
+- [x] Ollama LAN / home server connection
+- [x] OpenAI / Anthropic API integration (add grok?)
+- [x] Go deeper button (regenerate with thinking)
+- [x] AI suggested things to watch for
+- [x] AI suggested follow up questions
+- [x] Ask follow ups / Q&A
+- [x] Paralell scraping and spam protection
+- [x] Article deduplication and cleanup sources before combined to brief
+- [x] Implement youtube-transcript-api for commentary (think ryan mcbeth, william spaniel, news reports, battle lines, ukraine the latest, Council on foreign relations, that kind of thing) for informing AI -  analyst comments, context/history/opinion
+- [x] Systemd user service integration
 - [ ] Flatpak packaging
-- [ ] Topic filtering / saved searches
-- [ ] Actor/person tracking (graph layer)
+- [ ] RPM and repos packaging
+- [ ] deb packaging
+- [ ] AUR-git package
+- [ ] Analyst and leadership opinion tracking
+- [ ] Other audio podcasts transcripts extraction
 - [ ] Export briefings as PDF/Markdown
-- [ ] X/Twitter integration (when API becomes affordable)
-- [ ] Ground.news integration
+- [ ] X/Twitter integration (X API too expensive. Select Alternatives)
 - [ ] Historical context knowledge base (community-contributed)
+- [ ] Ongoing AI prompt tweaking
+- [ ] Windows app (paid/premium)
+- [ ] Macos app (paid/premium)
+- [ ] Android app (paid/premium)
+- [ ] iOS app (paid/premium)
 
 ---
 

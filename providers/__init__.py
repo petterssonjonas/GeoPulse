@@ -15,10 +15,11 @@ def create_provider(config: dict = None) -> LLMProvider:
         from storage.config import Config
         config = Config.llm()
 
+    from storage.config import OLLAMA_DEFAULT_BASE_URL
     provider = config.get("provider", "ollama")
     model = config.get("model", "qwen3:8b")
     api_key = config.get("api_key", "")
-    base_url = config.get("base_url", "http://localhost:11434")
+    base_url = config.get("base_url", OLLAMA_DEFAULT_BASE_URL)
     temperature = config.get("temperature", 0.3)
 
     if provider == "ollama":

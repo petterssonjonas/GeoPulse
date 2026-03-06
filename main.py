@@ -19,9 +19,12 @@ _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from version import __version__
+
 
 def main():
     parser = argparse.ArgumentParser(prog="geopulse", description="GeoPulse - Geopolitical Intelligence Assistant")
+    parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
     parser.add_argument("--briefing", "-b", type=int, metavar="ID", help="Open a specific briefing")
     parser.add_argument("--fetch", action="store_true", help="Run one ingestion cycle and exit")
     parser.add_argument("--generate", action="store_true", help="Generate one briefing and exit")

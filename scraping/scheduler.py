@@ -10,13 +10,14 @@ from storage.database import (
     insert_article, article_exists, get_recent_articles, mark_articles_used,
     insert_briefing, get_user_topics, run_retention_cleanup,
     get_source_check_time, set_source_check_time,
+    get_recent_briefings_for_novelty, get_briefing,
 )
 from scraping.fetchers import (
     fetch_sources_by_tier, fetch_all_sources, search_google_news,
     extract_article_text,
 )
 from analysis.triage import score_severity, match_topics, enrich_article
-from analysis.briefing import generate_briefing
+from analysis.briefing import generate_briefing, check_novelty, generate_update_briefing
 from providers import create_provider
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,40 @@ class SmartScheduler:
             self.on_status("Too few relevant articles for briefing")
             return
 
+        # Novelty check: look at last few briefings and decide skip / update / full
+        recent = get_recent_briefings_for_novelty(limit=5)
+        try:
+            provider = create_provider()
+            decision = check_novelty(relevant[:15], recent, provider)
+        except Exception as e:
+            logger.warning(f"Novelty check failed, proceeding with full briefing: {e}")
+            decision = "full"
+
+        if decision == "skip":
+            self.on_status("No new developments · same story as recent briefs")
+            self.on_refresh()
+            return
+
+        if isinstance(decision, tuple) and decision[0] == "update":
+            _, parent_id = decision
+            parent = get_briefing(parent_id) if parent_id else None
+            if parent:
+                self.on_status("Generating update to earlier briefing…")
+                try:
+                    update_brief = generate_update_briefing(relevant[:10], parent, provider)
+                    if update_brief:
+                        briefing_id = insert_briefing(update_brief)
+                        mark_articles_used(update_brief.get("article_ids", []))
+                        run_retention_cleanup()
+                        self.on_briefing(briefing_id)
+                        self.on_refresh()
+                        self.on_status(f"Update added · {update_brief.get('headline', '')[:50]}")
+                        return
+                except Exception as e:
+                    logger.warning(f"Update briefing failed, falling back to full: {e}")
+            decision = "full"
+
+        # Full new briefing
         self.on_status("Generating briefing via AI…")
         try:
             provider = create_provider()
@@ -216,7 +251,14 @@ class SmartScheduler:
             all_topics = []
             for a in relevant[:max_articles]:
                 all_topics.extend(a.get("topics") or [])
-            briefing["topics"] = list(dict.fromkeys(all_topics))[:5]
+            if len(briefing.get("topics", [])) < 4:
+                from collections import Counter
+                for t, _ in Counter(all_topics).most_common(4):
+                    if t and t not in briefing.get("topics", []):
+                        briefing.setdefault("topics", []).append(t)
+                        if len(briefing["topics"]) >= 4:
+                            break
+            briefing["topics"] = (briefing.get("topics") or [])[:5]
 
             briefing_id = insert_briefing(briefing)
             mark_articles_used(briefing.get("article_ids", []))
@@ -258,8 +300,22 @@ class SmartScheduler:
                 f"{prefix} {headline}",
                 summary,
             ], capture_output=True, timeout=5)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Desktop notification failed: %s", e)
+
+        if notifications.get("sound_on_briefing", False):
+            self._play_briefing_sound()
+
+    def _play_briefing_sound(self):
+        """Play a system sound (freedesktop complete/message) if available."""
+        for name in ("complete", "message", "bell"):
+            for ext in (".oga", ".ogg", ".wav"):
+                path = f"/usr/share/sounds/freedesktop/stereo/{name}{ext}"
+                try:
+                    subprocess.run(["paplay", path], capture_output=True, timeout=2)
+                    return
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                    continue
 
     # ── Manual refresh ────────────────────────────────────────────────────────
 

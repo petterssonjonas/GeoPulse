@@ -12,17 +12,16 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML; like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-TIMEOUT = 15
+from scraping.fetchers import HEADERS, REQUEST_TIMEOUT
+
+# Slightly shorter timeout for quick script runs
+TEST_TIMEOUT = min(15, REQUEST_TIMEOUT)
 
 
 def test_rss(url: str) -> tuple:
     """Returns (ok, count, message)."""
     try:
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        r = requests.get(url, headers=HEADERS, timeout=TEST_TIMEOUT)
         r.raise_for_status()
         feed = feedparser.parse(r.content)
         if getattr(feed, "bozo", False) and not getattr(feed, "entries", None):
@@ -41,7 +40,7 @@ def test_atom(url: str) -> tuple:
 
 def test_scrape(url: str, selector: str, base_url: str = "") -> tuple:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        r = requests.get(url, headers=HEADERS, timeout=TEST_TIMEOUT)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         links = soup.select(selector)[:30]

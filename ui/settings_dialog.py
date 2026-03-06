@@ -2,31 +2,42 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw, GLib, Pango
 
+import logging
 import threading
-from storage.config import Config
+from storage.config import (
+    Config,
+    OLLAMA_DEFAULT_BASE_URL,
+    BRIEFING_FONT_SIZE_MIN,
+    BRIEFING_FONT_SIZE_MAX,
+    BRIEFING_FONT_SIZE_DEFAULT,
+)
 from ollama_manager import OllamaManager
 import storage.database as db
 
+logger = logging.getLogger(__name__)
 
-def open_settings(parent_window):
-    dialog = SettingsDialog(parent_window)
+
+def open_settings(parent_window, on_appearance_changed=None):
+    dialog = SettingsDialog(parent_window, on_appearance_changed=on_appearance_changed)
     dialog.present()
 
 
 class SettingsDialog(Adw.PreferencesWindow):
-    def __init__(self, parent):
+    def __init__(self, parent, on_appearance_changed=None):
         super().__init__(transient_for=parent, modal=True)
         self.set_title("GeoPulse Settings")
         self.set_default_size(500, 600)
-        self._ollama = OllamaManager()
+        self._on_appearance_changed_cb = on_appearance_changed
+        self._ollama = OllamaManager(base_url=Config.llm().get("base_url", OLLAMA_DEFAULT_BASE_URL))
         self._build()
 
     def _build(self):
         self._build_ai_page()
         self._build_schedule_page()
         self._build_retention_page()
+        self._build_appearance_page()
         self._build_topics_page()
 
     # ── AI Engine ─────────────────────────────────────────────────────────────
@@ -105,6 +116,16 @@ class SettingsDialog(Adw.PreferencesWindow):
         # Ollama management
         grp3 = Adw.PreferencesGroup(title="Ollama")
         ollama_cfg = Config.ollama_config()
+        base_url = cfg.get("base_url", OLLAMA_DEFAULT_BASE_URL)
+        url_row = Adw.EntryRow(title="Ollama URL")
+        url_row.set_text(base_url)
+        url_row.connect("changed", self._on_ollama_url_changed)
+        grp3.add(url_row)
+        self._ollama_url_row = url_row
+        test_btn = Gtk.Button(label="Test connection")
+        test_btn.set_valign(Gtk.Align.CENTER)
+        test_btn.connect("clicked", self._on_test_ollama)
+        url_row.add_suffix(test_btn)
         auto_start = Adw.SwitchRow(title="Auto-start Ollama", subtitle="Start Ollama when GeoPulse launches")
         auto_start.set_active(ollama_cfg.get("auto_start", True))
         auto_start.connect("notify::active", lambda row, _: Config.update(ollama={"auto_start": row.get_active()}))
@@ -174,7 +195,151 @@ class SettingsDialog(Adw.PreferencesWindow):
             notifications={"min_severity": int(r.get_value())}))
         grp2.add(threshold_row)
 
+        sound_row = Adw.SwitchRow(title="Sound when briefing is ready")
+        sound_row.set_subtitle("Play system sound with desktop notification (default off)")
+        sound_row.set_active(notifications.get("sound_on_briefing", False))
+        sound_row.connect("notify::active", lambda r, _: Config.update(
+            notifications={"sound_on_briefing": r.get_active()}))
+        grp2.add(sound_row)
+
         page.add(grp2)
+
+    # ── Appearance ───────────────────────────────────────────────────────────
+
+    def _font_families_sorted(self):
+        """Return list of font family names: System default, then recommended, then rest (sorted)."""
+        recommended = ["Cantarell", "Inter", "Roboto", "Noto Sans", "OpenDyslexic"]
+        try:
+            ctx = self.create_pango_context()
+            families = ctx.list_families()
+            names = [f.get_name() for f in families]
+        except Exception as e:
+            logger.debug("Pango font enumeration failed: %s", e)
+            names = []
+        seen = set()
+        out = ["System default"]
+        for name in recommended:
+            if name in names and name not in seen:
+                out.append(name)
+                seen.add(name)
+        for name in sorted(names):
+            if name not in seen:
+                out.append(name)
+        return out
+
+    def _build_appearance_page(self):
+        page = Adw.PreferencesPage(title="Appearance", icon_name="preferences-desktop-theme-symbolic")
+        self.add(page)
+
+        appearance = Config.appearance()
+
+        grp = Adw.PreferencesGroup(title="Theme")
+        theme_list = Gtk.StringList.new(["Follow system", "Light", "Dark"])
+        theme_row = Adw.ComboRow(title="Color scheme")
+        theme_row.set_model(theme_list)
+        theme = appearance.get("theme", "system")
+        theme_row.set_selected({"system": 0, "light": 1, "dark": 2}.get(theme, 0))
+        theme_row.connect("notify::selected", self._on_theme_changed)
+        grp.add(theme_row)
+        page.add(grp)
+
+        grp2 = Adw.PreferencesGroup(
+            title="Briefing text",
+            description="Font and size for the briefing view (headline, summary, body).",
+        )
+        font_names = self._font_families_sorted()
+        font_list = Gtk.StringList()
+        for n in font_names:
+            font_list.append(n)
+        font_row = Adw.ComboRow(title="Font family")
+        font_row.set_model(font_list)
+        current_font = appearance.get("briefing_font", "") or "System default"
+        try:
+            idx = font_names.index(current_font) if current_font in font_names else 0
+        except Exception as e:
+            logger.debug("Font selection fallback: %s", e)
+            idx = 0
+        font_row.set_selected(idx)
+        font_row.connect("notify::selected", self._on_briefing_font_changed)
+        self._font_names = font_names
+        self._font_row = font_row
+        grp2.add(font_row)
+
+        size_list = Gtk.StringList.new(["90%", "100%", "110%", "120%", "130%"])
+        size_row = Adw.ComboRow(title="Font size")
+        size_row.set_model(size_list)
+        scale = appearance.get("briefing_font_size", BRIEFING_FONT_SIZE_DEFAULT)
+        size_idx = max(0, min(4, round((scale - BRIEFING_FONT_SIZE_MIN) / 0.1)))
+        size_row.set_selected(size_idx)
+        size_row.connect("notify::selected", self._on_briefing_font_size_changed)
+        grp2.add(size_row)
+
+        page.add(grp2)
+
+        # Header: GPU/VRAM (or CPU/RAM) and current model
+        hdr = Config.header()
+        grp_hdr = Adw.PreferencesGroup(
+            title="Header",
+            description="Status and model name shown next to the AI indicator.",
+        )
+        show_gpu_switch = Adw.SwitchRow(
+            title="Show system status",
+            subtitle="GPU/VRAM or CPU/RAM when no GPU",
+        )
+        show_gpu_switch.set_active(hdr.get("show_gpu_status", True))
+        show_gpu_switch.connect("notify::active", self._on_show_gpu_status_changed)
+        grp_hdr.add(show_gpu_switch)
+        show_model_switch = Adw.SwitchRow(
+            title="Show current model",
+            subtitle="Model name in parentheses (e.g. qwen3:8b)",
+        )
+        show_model_switch.set_active(hdr.get("show_model_name", True))
+        show_model_switch.connect("notify::active", self._on_show_model_name_changed)
+        grp_hdr.add(show_model_switch)
+        page.add(grp_hdr)
+
+    def _on_theme_changed(self, row, _):
+        idx = row.get_selected()
+        theme = ["system", "light", "dark"][idx] if 0 <= idx <= 2 else "system"
+        Config.update(appearance={"theme": theme})
+        self._apply_theme(theme)
+
+    def _apply_theme(self, theme):
+        style_manager = Adw.StyleManager.get_default()
+        if theme == "light":
+            style_manager.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT)
+        elif theme == "dark":
+            style_manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        else:
+            style_manager.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+
+    def _on_briefing_font_changed(self, row, _):
+        idx = row.get_selected()
+        names = getattr(self, "_font_names", ["System default"])
+        font = names[idx] if 0 <= idx < len(names) else "System default"
+        if font == "System default":
+            font = ""
+        Config.update(appearance={"briefing_font": font})
+        self._emit_appearance_changed()
+
+    def _on_briefing_font_size_changed(self, row, _):
+        idx = row.get_selected()
+        scale = BRIEFING_FONT_SIZE_MIN + idx * 0.1
+        scale = max(BRIEFING_FONT_SIZE_MIN, min(BRIEFING_FONT_SIZE_MAX, scale))
+        Config.update(appearance={"briefing_font_size": scale})
+        self._emit_appearance_changed()
+
+    def _on_show_gpu_status_changed(self, row, _):
+        Config.update(header={"show_gpu_status": row.get_active()})
+        self._emit_appearance_changed()
+
+    def _on_show_model_name_changed(self, row, _):
+        Config.update(header={"show_model_name": row.get_active()})
+        self._emit_appearance_changed()
+
+    def _emit_appearance_changed(self):
+        if hasattr(self, "_on_appearance_changed_cb") and self._on_appearance_changed_cb:
+            self._on_appearance_changed_cb()
 
     # ── Data retention ────────────────────────────────────────────────────────
 
@@ -189,7 +354,7 @@ class SettingsDialog(Adw.PreferencesWindow):
         )
         max_br = Adw.SpinRow.new_with_range(5, 500, 5)
         max_br.set_title("Max briefings to keep")
-        max_br.set_subtitle("Oldest briefings (and their Q&A) are removed when over this limit")
+        max_br.set_subtitle("Oldest briefings (and their Q&amp;A) are removed when over this limit")
         max_br.set_value(retention.get("max_briefings", 30))
         max_br.connect("notify::value", lambda r, _: Config.update(
             retention={"max_briefings": int(r.get_value())}))
@@ -278,3 +443,20 @@ class SettingsDialog(Adw.PreferencesWindow):
     def _on_depth_changed(self, row, _param):
         depth = "extended" if row.get_selected() == 1 else "brief"
         Config.update(briefing={"depth": depth})
+
+    def _on_ollama_url_changed(self, row):
+        url = (row.get_text() or "").strip() or OLLAMA_DEFAULT_BASE_URL
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        Config.update(llm={"base_url": url})
+        self._ollama = OllamaManager(base_url=url)
+
+    def _on_test_ollama(self, btn):
+        url = (getattr(self, "_ollama_url_row", None) and self._ollama_url_row.get_text() or "").strip() or Config.llm().get("base_url", OLLAMA_DEFAULT_BASE_URL)
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        om = OllamaManager(base_url=url)
+        if om.is_running():
+            self.add_toast(Adw.Toast(title="Connection successful"))
+        else:
+            self.add_toast(Adw.Toast(title="Cannot reach Ollama at " + url))

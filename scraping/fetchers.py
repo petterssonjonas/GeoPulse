@@ -32,8 +32,8 @@ def _parse_feed_date(entry) -> str:
             try:
                 dt = datetime(*val[:6], tzinfo=timezone.utc)
                 return dt.isoformat()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Feed date parse fallback: %s", e)
     return _now_iso()
 
 
