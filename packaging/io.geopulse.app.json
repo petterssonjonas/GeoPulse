@@ -1,0 +1,35 @@
+{
+  "id": "io.geopulse.app",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "46",
+  "sdk": "org.gnome.Sdk",
+  "command": "geopulse",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=x11",
+    "--socket=pulseaudio",
+    "--device=dri",
+    "--share=network",
+    "--env=PYTHONPATH=/app/share/geopulse"
+  ],
+  "modules": [
+    {
+      "name": "geopulse",
+      "buildsystem": "simple",
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/petterssonjonas/GeoPulse/archive/refs/tags/v0.90.0.tar.gz",
+          "dest-filename": "geopulse-0.90.0.tar.gz"
+        }
+      ],
+      "build-commands": [
+        "pip3 install --prefix=/app -r requirements.txt",
+        "mkdir -p /app/share/geopulse",
+        "cp -r . /app/share/geopulse/",
+        "install -Dm755 packaging/flatpak-run.sh /app/bin/geopulse"
+      ]
+    }
+  ]
+}
