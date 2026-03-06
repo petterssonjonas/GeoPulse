@@ -1,5 +1,7 @@
 # GeoPulse packaging: RPM, DEB, Flatpak, AppImage, source tarball
 
+**CI:** When you publish a release (e.g. via `./scripts/make-release.sh`), GitHub Actions runs [.github/workflows/release-packages.yml](../.github/workflows/release-packages.yml) and attaches **.rpm**, **.deb**, **.flatpak**, and **.AppImage** to that release. The source **.tar.gz** is attached by the script.
+
 ## Source tarball (.tar.gz)
 
 From the repo root:

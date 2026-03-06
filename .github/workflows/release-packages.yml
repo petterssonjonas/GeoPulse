@@ -1,0 +1,166 @@
+# When a release is published, build .rpm, .deb, Flatpak, and AppImage and attach them to the release.
+# Trigger: run scripts/make-release.sh (creates release + tarball) → this workflow runs and adds packages.
+
+name: Release packages
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - id: ver
+        run: |
+          V=$(grep -E '^__version__\s*=' version.py | sed "s/.*[\"']\\([^\"']*\\)[\"'].*/\\1/")
+          echo "version=$V" >> $GITHUB_OUTPUT
+          echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+
+  rpm:
+    needs: version
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Set spec version
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          sed -i "s/^Version:.*/Version:        $V/" packaging/geopulse.spec
+      - name: Install build deps
+        run: dnf install -y rpm-build python3-devel gtk4 libadwaita libnotify python3-requests python3-pyyaml python3-beautifulsoup4 python3-lxml python3-dateutil
+      - name: Create tarball
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          git archive --format=tar.gz --prefix=geopulse-$V/ -o geopulse-$V.tar.gz HEAD
+          mkdir -p ~/rpmbuild/SOURCES
+          cp geopulse-$V.tar.gz ~/rpmbuild/SOURCES/
+      - name: Build RPM
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          rpmbuild -ba packaging/geopulse.spec
+          cp /root/rpmbuild/RPMS/noarch/geopulse-*.rpm .
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          RPM=$(ls geopulse-*.rpm | head -1)
+          UPLOAD_URL="${{ github.event.release.upload_url }}"
+          UPLOAD_URL="${UPLOAD_URL%\{*}"
+          curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/octet-stream" --data-binary "@$RPM" "${UPLOAD_URL}?name=$RPM"
+
+  deb:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Install fpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install fpm
+      - name: Stage app files
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          mkdir -p staging/usr/share/geopulse staging/usr/bin
+          cp -r analysis data providers scraping storage ui staging/usr/share/geopulse/
+          cp *.py version.py ollama_manager.py requirements.txt staging/usr/share/geopulse/
+          printf '%s\n' '#!/usr/bin/python3' 'import os, sys' 'os.chdir("/usr/share/geopulse")' 'sys.path.insert(0, "/usr/share/geopulse")' 'from main import main' 'main()' > staging/usr/bin/geopulse
+          chmod 755 staging/usr/bin/geopulse
+      - name: Build DEB
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          fpm -s dir -t deb -n geopulse -v "$V" -C staging \
+            -d "python3" -d "python3-gi" -d "gir1.2-gtk-4.0" -d "gir1.2-adw-1" -d "libnotify-bin" \
+            --description "Geopolitical intelligence platform with local LLM" \
+            --license "GPL-3.0-or-later" \
+            .
+          mv geopulse_*.deb geopulse-$V.deb
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          UPLOAD_URL="${{ github.event.release.upload_url }}"
+          UPLOAD_URL="${UPLOAD_URL%\{*}"
+          curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/octet-stream" --data-binary "@geopulse-$V.deb" "${UPLOAD_URL}?name=geopulse-$V.deb"
+
+  flatpak:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Install Flatpak and builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y flathub org.gnome.Platform//46 org.gnome.Sdk//46
+      - name: Update manifest with tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          V="${TAG#v}"
+          sed -i "s|refs/tags/v[0-9.]*|refs/tags/$TAG|g" packaging/io.geopulse.app.json
+          sed -i "s|geopulse-[0-9.]*\\.tar\\.gz|geopulse-$V.tar.gz|g" packaging/io.geopulse.app.json
+      - name: Build Flatpak
+        run: |
+          flatpak-builder --force-clean --user build-dir packaging/io.geopulse.app.json
+      - name: Export Flatpak bundle
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          flatpak build-export export build-dir
+          flatpak build-bundle export geopulse-$V.flatpak io.geopulse.app --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          UPLOAD_URL="${{ github.event.release.upload_url }}"
+          UPLOAD_URL="${UPLOAD_URL%\{*}"
+          curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/octet-stream" --data-binary "@geopulse-$V.flatpak" "${UPLOAD_URL}?name=geopulse-$V.flatpak"
+
+  appimage:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Update recipe version
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          sed -i "s/version: '.*'/version: '$V'/" packaging/AppImageBuilder.yml
+      - name: Build AppImage
+        uses: AppImageCrafters/build-appimage-action@v1
+        with:
+          recipe: packaging/AppImageBuilder.yml
+          args: --skip-test
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          APPIMAGE=$(find . -maxdepth 3 -name '*.AppImage' -type f | head -1)
+          if [ -z "$APPIMAGE" ]; then echo "No .AppImage found"; exit 1; fi
+          NAME="geopulse-$V-x86_64.AppImage"
+          mv "$APPIMAGE" "$NAME"
+          UPLOAD_URL="${{ github.event.release.upload_url }}"
+          UPLOAD_URL="${UPLOAD_URL%\{*}"
+          curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/octet-stream" --data-binary "@$NAME" "${UPLOAD_URL}?name=$NAME"
