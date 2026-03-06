@@ -32,8 +32,10 @@ jobs:
     container:
       image: fedora:40
     steps:
-      - name: Install git
-        run: dnf install -y git
+      - name: Install git and set safe.directory
+        run: |
+          dnf install -y git
+          git config --global --add safe.directory '*'
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
@@ -115,12 +117,15 @@ jobs:
           sudo apt-get install -y flatpak flatpak-builder
           flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak --user install -y flathub org.gnome.Platform//46 org.gnome.Sdk//46
-      - name: Update manifest with tag
+      - name: Update manifest with tag and URL
         run: |
           TAG="${{ github.event.release.tag_name }}"
           V="${TAG#v}"
-          sed -i "s|refs/tags/v[0-9.]*|refs/tags/$TAG|g" packaging/io.geopulse.app.json
-          sed -i "s|geopulse-[0-9.]*\\.tar\\.gz|geopulse-$V.tar.gz|g" packaging/io.geopulse.app.json
+          REPO="${{ github.repository }}"
+          jq --arg tag "$TAG" --arg v "$V" --arg repo "$REPO" \
+            '.modules[0].sources[0].url = "https://github.com/" + $repo + "/archive/refs/tags/" + $tag + ".tar.gz" | .modules[0].sources[0]["dest-filename"] = "geopulse-" + $v + ".tar.gz"' \
+            packaging/io.geopulse.app.json > packaging/io.geopulse.app.json.tmp
+          mv packaging/io.geopulse.app.json.tmp packaging/io.geopulse.app.json
       - name: Add checksum to manifest
         run: |
           TAG="${{ github.event.release.tag_name }}"

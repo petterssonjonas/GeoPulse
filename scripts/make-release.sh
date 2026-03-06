@@ -7,10 +7,14 @@
 # For GitHub release: set GH_TOKEN or run `gh auth login` first.
 
 set -e
+cd "$(dirname "$0")/.."
+
 VERSION=$(grep -E '^__version__\s*=' version.py | sed "s/.*[\"']\\([^\"']*\\)[\"'].*/\\1/")
 TARBALL="geopulse-${VERSION}.tar.gz"
 
-cd "$(dirname "$0")/.."
+# Sync version to spec, AppImage recipe, README so the tarball is consistent
+./scripts/sync-version.py
+
 git archive --format=tar.gz --prefix="geopulse-${VERSION}/" -o "$TARBALL" HEAD
 echo "Created $TARBALL"
 

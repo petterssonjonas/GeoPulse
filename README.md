@@ -2,7 +2,7 @@
 
 **Open source geopolitical intelligence platform. Runs fully local or via cloud API.**
 
-*Version 0.90.2 (beta) — [GNOME-style versioning](https://handbook.gnome.org/release-planning.html): 0.x = pre-1.0 beta, 1.0 = first stable.*
+*Version 0.90.3 (beta) — [GNOME-style versioning](https://handbook.gnome.org/release-planning.html): 0.x = pre-1.0 beta, 1.0 = first stable.*
 
 A background service ingests curated news sources, transcripts of videos and podcasts, official government feeds and more. It Scores severity, generates analytically rich briefings using a local LLM (Ollama serve, app handles AI loading), and delivers them as a native GNOME desktop application with inline Q&A.
 
