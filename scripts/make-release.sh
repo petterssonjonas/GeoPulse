@@ -40,14 +40,26 @@ fi
 git archive --format=tar.gz --prefix="geopulse-${VERSION}/" -o "$TARBALL" HEAD
 echo "Created $TARBALL"
 
+# Ensure tag v$VERSION points to current HEAD (fixes re-release after deleting tag on GitHub: local tag can still point to old commit)
+if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+  if [ "$(git rev-parse "v${VERSION}")" != "$(git rev-parse HEAD)" ]; then
+    echo "Updating tag v${VERSION} to point to current HEAD..."
+    git tag -f "v${VERSION}"
+    TAG_FORCE_PUSH=1
+  fi
+else
+  git tag "v${VERSION}"
+fi
+
 if command -v gh >/dev/null 2>&1; then
   if ! gh auth status 2>/dev/null; then
     echo "Run \`gh auth login\` (or set GH_TOKEN) to create the release automatically."
     echo "Or create release at: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/new?tag=v${VERSION}"
     exit 0
   fi
-  if ! git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-    git tag "v${VERSION}"
+  if [ -n "$TAG_FORCE_PUSH" ]; then
+    git push origin "v${VERSION}" --force
+  else
     git push origin "v${VERSION}"
   fi
   echo "Creating GitHub release v${VERSION}..."
