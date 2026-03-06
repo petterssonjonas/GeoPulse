@@ -20,8 +20,8 @@
       "sources": [
         {
           "type": "archive",
-          "url": "https://github.com/petterssonjonas/GeoPulse/archive/refs/tags/v0.90.3.tar.gz",
-          "dest-filename": "geopulse-0.90.3.tar.gz"
+          "url": "https://github.com/petterssonjonas/GeoPulse/archive/refs/tags/v0.90.4.tar.gz",
+          "dest-filename": "geopulse-0.90.4.tar.gz"
         }
       ],
       "build-commands": [
