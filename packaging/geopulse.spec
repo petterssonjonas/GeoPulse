@@ -4,7 +4,7 @@
 # Source tarball: git archive --format=tar.gz --prefix=geopulse-0.90.0/ -o geopulse-0.90.0.tar.gz HEAD
 
 Name:           geopulse
-Version:        0.90.0
+Version:        0.90.1
 Release:        1%{?dist}
 Summary:        Geopolitical intelligence platform with local LLM briefings
 License:        GPL-3.0-or-later
