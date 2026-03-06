@@ -1,0 +1,9 @@
+# Python 3.6–compatible pins for AppImage (build runs in appimage-builder’s Python 3.6 env).
+# Keep in sync with requirements.txt where possible; relax only when the builder has older Python.
+feedparser>=6.0
+requests>=2.27,<2.28
+beautifulsoup4>=4.12
+lxml>=5.0
+pyyaml>=6.0
+python-dateutil>=2.9
+trafilatura>=1.8

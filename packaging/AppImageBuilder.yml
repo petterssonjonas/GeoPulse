@@ -4,8 +4,8 @@
 
 version: 1
 script: |
-  # Install Python deps into AppDir
-  pip3 install --target AppDir/usr/lib/geopulse/vendor -r requirements.txt
+  # Install Python deps into AppDir (use AppImage-specific pins for builder’s Python 3.6)
+  pip3 install --target AppDir/usr/lib/geopulse/vendor -r packaging/requirements-appimage.txt
   # Copy app
   mkdir -p AppDir/usr/lib/geopulse
   cp -r *.py version.py analysis data providers scraping storage ui ollama_manager.py AppDir/usr/lib/geopulse/
