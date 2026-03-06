@@ -67,9 +67,10 @@ broken, and tests for hot paths. When in doubt, choose the simpler, more predict
 - **14. Move model selector to settings only**
   Remove model dropdown from header; model choice lives in Settings > AI Engine only. **Also to figure out:** what to do when a model is already loaded in Ollama (e.g. user's coding assistant); consider adopting a suitable smaller model as the default so GeoPulse doesn't conflict with other workloads.
   *Files:* `ui/window.py`, `ui/settings_dialog.py`
-- **15. Briefing font and font size**
+- **15. Briefing font and font size** *(done)*
   Let the user change the font and font size of briefing text (headline, body, sections). At least a few presets including **OpenDyslexic** for readability. GNOME/libadwaita typically ships with a set of standard fonts (e.g. Cantarell, Inter, system UI font); we can offer those plus OpenDyslexic if installed. Store choice in config; apply via CSS (e.g. `.body-text`, `.briefing-headline` use the selected font/size).
-  *Files:* `storage/config.py`, `ui/settings_dialog.py`, `ui/style.css` (or runtime CSS override)
+  *Done:* Settings > Appearance: Theme (Follow system / Light / Dark), Font family (system default + all Pango families, recommended first), Font size (90–130%). Config `appearance.theme`, `briefing_font`, `briefing_font_size`. Optional sound when briefing is ready (default off); `notifications.sound_on_briefing`.
+  *Files:* `storage/config.py`, `ui/settings_dialog.py`, `ui/app.py`, `ui/style.css`, `scraping/scheduler.py`
 - **16. Briefing card right-click / action menu**
   Options: regenerate, add depth, find more, delete, mark unread.
   *Implementation:* `Gtk.PopoverMenu` on BriefingRow; actions call scheduler/DB as needed.

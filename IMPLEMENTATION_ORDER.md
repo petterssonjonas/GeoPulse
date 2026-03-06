@@ -73,7 +73,7 @@ Execute in this order so each step builds on the last and we can test as we go.
 
 **Priority:** Get **source reliability** (Step 4) in good shape early — good data before more prompt work. Use **SOURCES.md** (in `sources/`, uppercase filenames) to track which sources work, rank them, and decide what to enable; then implement retry + skip-after-fail in code.
 
-**Actual execution so far:** Step **4** (source reliability) was done first, then Step **1** (migration framework), then Step **2** (LLM prompt parsing), then Step **3** (data retention). Next in table order: Step 5 (depth in Settings + “Go deeper”).
+**Actual execution so far:** Step **4** (source reliability), **1** (migration framework), **2** (LLM prompt parsing), **3** (data retention), **5** (depth in Settings + “Go deeper”), **6** (Remote Ollama URL + Appearance + theme + briefing font/size + sound on briefing), **7** (briefing card context menu), **8** (tags visible).
 
 | Step | What | Why first |
 |------|------|------------|
@@ -82,9 +82,9 @@ Execute in this order so each step builds on the last and we can test as we go.
 | **3** | Data retention (max briefings 30, article_days, cleanup) | Bounds storage; Settings UI for retention. **Done:** `retention.max_briefings` (default 30) and `retention.article_retention_days` (default 14) in config; **Data** page in Settings with spin rows; `run_retention_cleanup()` removes oldest briefings (+ conversations) and articles older than N days; runs on startup and after each new briefing. |
 | **4** | Fix source reliability (sources + retry + skip after 5 fails) | More sources working = more value; retry avoids transient failures. **Track status in SOURCES.md** (working/broken/untested, rank, use). |
 | **5** | Depth in Settings + “Go deeper” button | You asked for it; removes header clutter, adds clear action. |
-| **6** | Remote Ollama URL in Settings | Small change, high value for your setup. |
-| **7** | Briefing card context menu (Regenerate, Go deeper, Delete, Mark unread) | Makes each card actionable. |
-| **8** | Tags visible (wrap or flow) | Finishes the card UX you asked for. |
+| **6** | Remote Ollama URL in Settings | Small change, high value for your setup. **Done:** URL entry + Test connection in Settings > AI Engine > Ollama; window and settings use `Config.llm().base_url` for OllamaManager. |
+| **7** | Briefing card context menu (Regenerate, Go deeper, Delete, Mark unread) | Makes each card actionable. **Done:** Right-click on any briefing row opens Gtk.PopoverMenu with Regenerate, Go deeper, Mark unread, Delete. Regenerate uses current depth from config; Go deeper uses extended; Delete removes briefing + conversations; Mark unread sets is_read=0. |
+| **8** | Tags visible (wrap or flow) | Finishes the card UX you asked for. **Done:** Topic tags on sidebar cards use Gtk.FlowBox so all tags wrap/flow; no more “+N” truncation. |
 | **9** | Optional: minimal tests (migrations, parser) | Locks in stability before adding more features. |
 | **10** | **Both:** event-based briefing **then** scheduled brief + DND (see v1 scope point 4) | Event-based improves content; scheduled + DND + “+1 card per 2h” improves routine and catch-up. |
 

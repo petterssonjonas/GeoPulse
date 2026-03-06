@@ -10,15 +10,9 @@ script: |
   # Copy app
   mkdir -p AppDir/usr/lib/geopulse
   cp -r *.py version.py analysis data providers scraping storage ui ollama_manager.py AppDir/usr/lib/geopulse/
-  # Launcher
+  # Launcher (avoid bare colons in YAML by using printf)
   mkdir -p AppDir/usr/bin
-  echo '#!/usr/bin/env python3
-import os, sys
-os.chdir("/usr/lib/geopulse")
-sys.path.insert(0, "/usr/lib/geopulse")
-sys.path.insert(0, "/usr/lib/geopulse/vendor")
-from main import main
-main()' > AppDir/usr/bin/geopulse
+  printf '%s\n' '#!/usr/bin/env python3' 'import os, sys' 'os.chdir("/usr/lib/geopulse")' 'sys.path.insert(0, "/usr/lib/geopulse")' 'sys.path.insert(0, "/usr/lib/geopulse/vendor")' 'from main import main' 'main()' > AppDir/usr/bin/geopulse
   chmod +x AppDir/usr/bin/geopulse
 AppDir:
   path: AppDir

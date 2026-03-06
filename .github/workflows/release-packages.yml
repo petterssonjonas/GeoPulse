@@ -32,6 +32,8 @@ jobs:
     container:
       image: fedora:40
     steps:
+      - name: Install git
+        run: dnf install -y git
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
@@ -119,6 +121,14 @@ jobs:
           V="${TAG#v}"
           sed -i "s|refs/tags/v[0-9.]*|refs/tags/$TAG|g" packaging/io.geopulse.app.json
           sed -i "s|geopulse-[0-9.]*\\.tar\\.gz|geopulse-$V.tar.gz|g" packaging/io.geopulse.app.json
+      - name: Add checksum to manifest
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          V="${{ needs.version.outputs.version }}"
+          curl -sL "https://github.com/${{ github.repository }}/releases/download/$TAG/geopulse-$V.tar.gz" -o tarball.tar.gz
+          SHA256=$(sha256sum tarball.tar.gz | awk '{print $1}')
+          jq --arg s "$SHA256" '.modules[0].sources[0].sha256 = $s' packaging/io.geopulse.app.json > packaging/io.geopulse.app.json.tmp
+          mv packaging/io.geopulse.app.json.tmp packaging/io.geopulse.app.json
       - name: Build Flatpak
         run: |
           flatpak-builder --force-clean --user build-dir packaging/io.geopulse.app.json
