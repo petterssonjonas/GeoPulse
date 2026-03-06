@@ -18,7 +18,9 @@
       "name": "geopulse",
       "buildsystem": "simple",
       "build-options": {
-        "build-args": ["--share=network"]
+        "build-args": [
+          "--share=network"
+        ]
       },
       "sources": [
         {
