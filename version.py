@@ -4,4 +4,4 @@ After changing __version__, run:  ./scripts/sync-version.py
 to update packaging/geopulse.spec, packaging/AppImageBuilder.yml, and README.md.
 """
 
-__version__ = "0.90.4"
+__version__ = "0.90.5"

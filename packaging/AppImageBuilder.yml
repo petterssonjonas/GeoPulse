@@ -35,6 +35,6 @@ AppDir:
       - libnotify-bin
 
 AppImage:
-  update-information: null
-  sign-key: null
+  update-information: ""
+  sign-key: ""
   arch: x86_64

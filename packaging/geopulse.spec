@@ -11,6 +11,8 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/petterssonjonas/GeoPulse
 Source0:        geopulse-%{version}.tar.gz
 
+BuildArch:      noarch
+
 BuildRequires:  python3-devel
 Requires:       python3
 Requires:       gtk4
@@ -32,7 +34,7 @@ with inline Q&A. No data leaves your machine.
 
 %install
 mkdir -p %{buildroot}%{_datadir}/geopulse
-cp -r *.py version.py analysis data providers scraping storage ui ollama_manager.py %{buildroot}%{_datadir}/geopulse/
+cp -r *.py analysis data providers scraping storage ui ollama_manager.py %{buildroot}%{_datadir}/geopulse/
 mkdir -p %{buildroot}%{_bindir}
 cat > %{buildroot}%{_bindir}/geopulse << 'EOF'
 #!/usr/bin/python3

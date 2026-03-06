@@ -56,7 +56,7 @@ jobs:
         run: |
           V="${{ needs.version.outputs.version }}"
           rpmbuild -ba packaging/geopulse.spec
-          cp /root/rpmbuild/RPMS/noarch/geopulse-*.rpm .
+          cp "$HOME/rpmbuild/RPMS/noarch/geopulse-"*.rpm .
       - name: Upload to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -139,7 +139,7 @@ jobs:
           mv packaging/io.geopulse.app.json.tmp packaging/io.geopulse.app.json
       - name: Build Flatpak
         run: |
-          flatpak-builder --force-clean --user build-dir packaging/io.geopulse.app.json
+          flatpak-builder --force-clean --user --share=network build-dir packaging/io.geopulse.app.json
       - name: Export Flatpak bundle
         run: |
           V="${{ needs.version.outputs.version }}"
