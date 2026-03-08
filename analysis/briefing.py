@@ -5,6 +5,7 @@ import re
 import logging
 from typing import Union, Tuple
 from providers import LLMProvider
+from storage.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,49 @@ Cite the sources you draw from. Your audience is a sophisticated policymaker.
 Use Markdown for readability so the briefing is easy to scan: use **bold** for key terms,
 names, and emphasis; use ## subheadings within long sections to break up the text; use
 bullet points (- or *) for lists. Avoid walls of plain text — structure content for quick reading."""
+
+# Metadata for Settings → Prompts tab: id, title, explanation, when_run (all prompts in the app)
+PROMPTS_META = [
+    {
+        "id": "system_prompt",
+        "title": "Analyst system prompt",
+        "explanation": "Sets the AI's persona and style for all full briefings: tone, audience, and formatting (Markdown, bold, subheadings).",
+        "when_run": "Used as the system message whenever a new full briefing is generated from articles.",
+    },
+    {
+        "id": "briefing_template",
+        "title": "Full briefing template",
+        "explanation": "User prompt that asks the model to analyze articles and produce a structured briefing with severity, headline, summary, developments, context, actors, outlook, watch list, and questions. Placeholders like {n}, {topics}, {articles} are filled by the app.",
+        "when_run": "Used when generating a new full briefing (scheduled or on-demand) from the current article set.",
+    },
+    {
+        "id": "novelty_check_prompt",
+        "title": "Novelty check prompt",
+        "explanation": "Asks the model to decide whether new articles warrant a new briefing, an update to an existing one, or should be skipped. Reply must be exactly SKIP, NEW, or UPDATE <id>.",
+        "when_run": "Run before each potential briefing to avoid duplicate or redundant briefings; uses recent briefings and new articles.",
+    },
+    {
+        "id": "update_briefing_template",
+        "title": "Update briefing template",
+        "explanation": "Short template for minor updates that attach to an earlier briefing. Produces headline, summary, and optional developments.",
+        "when_run": "Used when the novelty check returns UPDATE <id> to generate a short update card linked to that briefing.",
+    },
+]
+
+
+def get_prompt(prompt_id: str) -> str:
+    """Return prompt text: user override from config if set, else built-in default."""
+    overrides = Config.prompts()
+    if prompt_id in overrides and overrides[prompt_id]:
+        return overrides[prompt_id]
+    defaults = {
+        "system_prompt": SYSTEM_PROMPT,
+        "briefing_template": BRIEFING_TEMPLATE,
+        "novelty_check_prompt": NOVELTY_CHECK_PROMPT,
+        "update_briefing_template": UPDATE_BRIEFING_TEMPLATE,
+    }
+    return defaults.get(prompt_id, "")
+
 
 # Depth-specific instructions injected into the template
 _DEPTH_INSTRUCTIONS = {
@@ -111,7 +155,7 @@ def check_novelty(articles: list, recent_briefings: list, provider: LLMProvider)
         f"[ID {b['id']}] {b.get('headline', '')}\n{b.get('summary', '')[:400]}"
         for b in recent_briefings
     )
-    prompt = NOVELTY_CHECK_PROMPT.format(
+    prompt = get_prompt("novelty_check_prompt").format(
         recent_briefings=briefings_text,
         articles=articles_text,
     )
@@ -154,10 +198,21 @@ Reply in this format:
 <<<END>>>"""
 
 
+def get_default_prompt(prompt_id: str) -> str:
+    """Return the built-in default text for a prompt (for Settings UI reset)."""
+    defaults = {
+        "system_prompt": SYSTEM_PROMPT,
+        "briefing_template": BRIEFING_TEMPLATE,
+        "novelty_check_prompt": NOVELTY_CHECK_PROMPT,
+        "update_briefing_template": UPDATE_BRIEFING_TEMPLATE,
+    }
+    return defaults.get(prompt_id, "")
+
+
 def generate_update_briefing(articles: list, parent_briefing: dict, provider: LLMProvider) -> dict | None:
     """Generate a short update briefing that attaches to parent_briefing. Returns None on parse failure."""
     articles_text = format_articles_for_prompt(articles[:10])
-    prompt = UPDATE_BRIEFING_TEMPLATE.format(
+    prompt = get_prompt("update_briefing_template").format(
         parent_headline=parent_briefing.get("headline", "Earlier briefing"),
         articles=articles_text,
     )
@@ -403,7 +458,7 @@ def generate_briefing(articles: list, topics: list, provider: LLMProvider,
     depth = depth if depth in _DEPTH_INSTRUCTIONS else "brief"
     inst = _DEPTH_INSTRUCTIONS[depth]
     articles_text = format_articles_for_prompt(articles)
-    prompt = BRIEFING_TEMPLATE.format(
+    prompt = get_prompt("briefing_template").format(
         n=len(articles),
         topics=", ".join(topics) if topics else "general geopolitics",
         depth_label=depth.upper(),
@@ -415,7 +470,7 @@ def generate_briefing(articles: list, topics: list, provider: LLMProvider,
         articles=articles_text,
     )
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": get_prompt("system_prompt")},
         {"role": "user", "content": prompt},
     ]
     response = provider.chat(messages)

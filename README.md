@@ -13,7 +13,7 @@ A background service ingests curated news sources, transcripts of videos and pod
 
 | Briefing list & detail | Q&A chat with local LLM |
 | ---------------------- | ----------------------- |
-| GeoPulse briefing view | GeoPulse Q&A chat       |
+| ![GeoPulse briefing view](./Geopulse1.png) | ![GeoPulse Q&A chat](./Geopulse2.png)       |
 
 
 *Severity-ranked briefings in the sidebar; click to read the full digest. Ask follow-up questions in context with your local model (Ollama).*

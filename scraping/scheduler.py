@@ -2,7 +2,7 @@
 import logging
 import subprocess
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, time as dtime
 from typing import Callable, Optional
 
 from storage.config import Config, load_sources
@@ -11,6 +11,7 @@ from storage.database import (
     insert_briefing, get_user_topics, run_retention_cleanup,
     get_source_check_time, set_source_check_time,
     get_recent_briefings_for_novelty, get_briefing,
+    get_scheduler_state, set_scheduler_state,
 )
 from scraping.fetchers import (
     fetch_sources_by_tier, fetch_all_sources, search_google_news,
@@ -45,6 +46,7 @@ class SmartScheduler:
         self._running = False
         self._sentinel_timer: Optional[threading.Timer] = None
         self._briefing_timer: Optional[threading.Timer] = None
+        self._morning_timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
 
     def start(self):
@@ -52,8 +54,7 @@ class SmartScheduler:
         logger.info("Scheduler started")
         schedule = Config.schedule()
         s_int = schedule.get("sentinel_interval_minutes", 15)
-        b_int = schedule.get("briefing_interval_minutes", 60)
-        logger.info(f"  Sentinel every {s_int}m, briefings every {b_int}m")
+        logger.info(f"  Sentinel every {s_int}m")
 
         # Do not run sentinel immediately on start — respect min interval from last run (persisted)
         delay = self._seconds_until_tier_allowed(1)
@@ -64,11 +65,26 @@ class SmartScheduler:
             self._sentinel_timer.start()
         else:
             threading.Thread(target=self._sentinel_cycle, daemon=True).start()
-        self._schedule_briefing()
+
+        sched = Config.scheduled_briefing()
+        if sched.get("enabled", True):
+            b_int = schedule.get("briefing_interval_minutes", 60)
+            logger.info(f"  Scheduled briefing every {b_int}m")
+            self._schedule_briefing()
+        else:
+            logger.info("  Scheduled briefing disabled")
+
+        morning = Config.morning_briefing()
+        if morning.get("enabled", False):
+            t = morning.get("time", "07:00")
+            logger.info(f"  Morning briefing at {t}")
+            self._schedule_morning()
+        else:
+            logger.info("  Morning briefing disabled")
 
     def stop(self):
         self._running = False
-        for t in (self._sentinel_timer, self._briefing_timer):
+        for t in (self._sentinel_timer, self._briefing_timer, self._morning_timer):
             if t:
                 t.cancel()
         logger.info("Scheduler stopped")
@@ -193,10 +209,13 @@ class SmartScheduler:
 
     # ── Briefing generation ───────────────────────────────────────────────────
 
-    def _do_generate_briefing(self, briefing_type: str = "scheduled"):
+    def _do_generate_briefing(self, briefing_type: str = "scheduled",
+                              depth_override: Optional[str] = None,
+                              hours: Optional[int] = None):
         schedule = Config.schedule()
         max_articles = schedule.get("max_articles_per_briefing", 20)
-        articles = get_recent_articles(hours=24, limit=max_articles)
+        article_hours = hours if hours is not None else 24
+        articles = get_recent_articles(hours=article_hours, limit=max_articles)
         if not articles:
             self.on_status("No articles for briefing")
             return
@@ -205,6 +224,15 @@ class SmartScheduler:
         if len(relevant) < 2:
             self.on_status("Too few relevant articles for briefing")
             return
+
+        if depth_override is not None:
+            depth = depth_override
+        elif briefing_type == "morning":
+            depth = Config.morning_briefing().get("depth", "brief")
+        elif briefing_type == "scheduled":
+            depth = Config.scheduled_briefing().get("depth", "brief")
+        else:
+            depth = Config.briefing_depth()
 
         # Novelty check: look at last few briefings and decide skip / update / full
         recent = get_recent_briefings_for_novelty(limit=5)
@@ -244,7 +272,6 @@ class SmartScheduler:
         try:
             provider = create_provider()
             topics = [t["name"] for t in get_user_topics()]
-            depth = Config.briefing_depth()
             briefing = generate_briefing(relevant[:max_articles], topics, provider, depth=depth)
             briefing["briefing_type"] = briefing_type
             briefing["source_count"] = len(set(a.get("source_name", "") for a in relevant))
@@ -263,6 +290,9 @@ class SmartScheduler:
             briefing_id = insert_briefing(briefing)
             mark_articles_used(briefing.get("article_ids", []))
             run_retention_cleanup()
+
+            if briefing_type == "morning":
+                set_scheduler_state("last_morning_briefing_date", datetime.now().strftime("%Y-%m-%d"))
 
             sev = briefing.get("severity", 1)
             headline = briefing.get("headline", "New Briefing")
@@ -381,15 +411,72 @@ class SmartScheduler:
     def _schedule_briefing(self):
         if not self._running:
             return
+        sched = Config.scheduled_briefing()
+        if not sched.get("enabled", True):
+            return
         interval = Config.schedule().get("briefing_interval_minutes", 60) * 60
         self._briefing_timer = threading.Timer(interval, self._tick_briefing)
         self._briefing_timer.daemon = True
         self._briefing_timer.start()
 
     def _tick_briefing(self):
+        if self._running and Config.scheduled_briefing().get("enabled", True):
+            depth = Config.scheduled_briefing().get("depth", "brief")
+            self._do_generate_briefing("scheduled", depth_override=depth)
         if self._running:
-            self._do_generate_briefing("scheduled")
-        self._schedule_briefing()
+            self._schedule_briefing()
+
+    def _seconds_until_morning_time(self) -> float:
+        """Seconds until next run at configured morning time (local time)."""
+        morning = Config.morning_briefing()
+        time_str = morning.get("time", "07:00")
+        try:
+            hour, minute = map(int, time_str.strip().split(":")[:2])
+        except (ValueError, AttributeError):
+            hour, minute = 7, 0
+        now = datetime.now()
+        today = now.date()
+        target_time = dtime(hour, minute, 0)
+        target_dt = datetime.combine(today, target_time)
+        if now >= target_dt:
+            target_dt += timedelta(days=1)
+        return (target_dt - now).total_seconds()
+
+    def _schedule_morning(self):
+        if not self._running:
+            return
+        if not Config.morning_briefing().get("enabled", False):
+            return
+        sec = max(1, int(self._seconds_until_morning_time()))
+        self._morning_timer = threading.Timer(sec, self._tick_morning)
+        self._morning_timer.daemon = True
+        self._morning_timer.start()
+        logger.debug("Morning briefing next in %s s", sec)
+
+    def _tick_morning(self):
+        if not self._running:
+            return
+        morning = Config.morning_briefing()
+        if not morning.get("enabled", False):
+            self._schedule_morning()
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        last = get_scheduler_state("last_morning_briefing_date")
+        if last == today:
+            logger.info("Morning briefing already run today, skipping")
+            self._schedule_morning()
+            return
+        self.on_status("Generating morning briefing…")
+        depth = morning.get("depth", "brief")
+        threading.Thread(
+            target=lambda: self._run_morning_briefing(depth, today),
+            daemon=True,
+        ).start()
+        self._schedule_morning()
+
+    def _run_morning_briefing(self, depth: str, today: str):
+        """Run morning briefing; last_morning_briefing_date is set in _do_generate_briefing on success."""
+        self._do_generate_briefing("morning", depth_override=depth, hours=12)
 
 
 def run_one_ingestion() -> int:

@@ -15,6 +15,7 @@ from storage.config import (
 )
 from ollama_manager import OllamaManager
 import storage.database as db
+from analysis.briefing import PROMPTS_META, get_prompt, get_default_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class SettingsDialog(Adw.PreferencesWindow):
         self._build_schedule_page()
         self._build_retention_page()
         self._build_appearance_page()
+        self._build_prompts_page()
         self._build_topics_page()
 
     # ── AI Engine ─────────────────────────────────────────────────────────────
@@ -161,6 +163,46 @@ class SettingsDialog(Adw.PreferencesWindow):
 
         page.add(grp)
 
+        # Morning briefing: one card at user-chosen time (overnight news)
+        morning = Config.morning_briefing()
+        grp_morning = Adw.PreferencesGroup(
+            title="Morning briefing",
+            description="One briefing per day summarizing overnight news, at a time you choose. Uses articles from the last 12 hours.",
+        )
+        morning_switch = Adw.SwitchRow(title="Enable morning briefing")
+        morning_switch.set_active(morning.get("enabled", False))
+        morning_switch.connect("notify::active", self._on_morning_enabled_changed)
+        grp_morning.add(morning_switch)
+        morning_time_row = Adw.EntryRow(title="Time (HH:MM)")
+        morning_time_row.set_text(morning.get("time", "07:00"))
+        morning_time_row.connect("changed", self._on_morning_time_changed)
+        grp_morning.add(morning_time_row)
+        morning_depth_list = Gtk.StringList.new(["Brief", "Extended"])
+        morning_depth_row = Adw.ComboRow(title="Depth")
+        morning_depth_row.set_model(morning_depth_list)
+        morning_depth_row.set_selected(1 if morning.get("depth", "brief") == "extended" else 0)
+        morning_depth_row.connect("notify::selected", self._on_morning_depth_changed)
+        grp_morning.add(morning_depth_row)
+        page.add(grp_morning)
+
+        # Scheduled briefing: interval-based, toggle and depth
+        sched = Config.scheduled_briefing()
+        grp_sched = Adw.PreferencesGroup(
+            title="Scheduled briefing",
+            description="Generate a briefing every N minutes (interval above). Can be turned off if you only want morning or on-demand briefings.",
+        )
+        sched_switch = Adw.SwitchRow(title="Enable scheduled briefing")
+        sched_switch.set_active(sched.get("enabled", True))
+        sched_switch.connect("notify::active", self._on_scheduled_enabled_changed)
+        grp_sched.add(sched_switch)
+        sched_depth_list = Gtk.StringList.new(["Brief", "Extended"])
+        sched_depth_row = Adw.ComboRow(title="Depth")
+        sched_depth_row.set_model(sched_depth_list)
+        sched_depth_row.set_selected(1 if sched.get("depth", "brief") == "extended" else 0)
+        sched_depth_row.connect("notify::selected", self._on_scheduled_depth_changed)
+        grp_sched.add(sched_depth_row)
+        page.add(grp_sched)
+
         grp_throttle = Adw.PreferencesGroup(
             title="Source check throttle",
             description="Minimum time between source checks (persists across app restarts). Stops over-scraping and avoids a full refresh every time you open the app.",
@@ -203,6 +245,85 @@ class SettingsDialog(Adw.PreferencesWindow):
         grp2.add(sound_row)
 
         page.add(grp2)
+
+        # Email: default recipient and method (mailto or SMTP)
+        email_cfg = Config.email_config()
+        grp_email = Adw.PreferencesGroup(
+            title="Email briefing",
+            description="Default recipient when using \"Email\" on a briefing. Opens your mail client or sends via SMTP.",
+        )
+        email_to_row = Adw.EntryRow(title="Default recipient")
+        email_to_row.set_text(email_cfg.get("default_to", ""))
+        email_to_row.connect("changed", self._on_email_default_to_changed)
+        grp_email.add(email_to_row)
+        email_method_list = Gtk.StringList.new(["Open in mail client", "Send via SMTP"])
+        email_method_row = Adw.ComboRow(title="Method")
+        email_method_row.set_model(email_method_list)
+        email_method_row.set_selected(1 if email_cfg.get("method", "mailto") == "smtp" else 0)
+        email_method_row.connect("notify::selected", self._on_email_method_changed)
+        grp_email.add(email_method_row)
+        smtp = email_cfg.get("smtp", {})
+        smtp_host_row = Adw.EntryRow(title="SMTP host")
+        smtp_host_row.set_text(smtp.get("host", ""))
+        smtp_host_row.connect("changed", self._on_smtp_host_changed)
+        grp_email.add(smtp_host_row)
+        smtp_port_row = Adw.SpinRow.new_with_range(1, 65535, 1)
+        smtp_port_row.set_title("SMTP port")
+        smtp_port_row.set_value(smtp.get("port", 587))
+        smtp_port_row.connect("notify::value", lambda r, _: Config.update(
+            email={"smtp": {**Config.email_config().get("smtp", {}), "port": int(r.get_value())}}))
+        grp_email.add(smtp_port_row)
+        smtp_user_row = Adw.EntryRow(title="SMTP user")
+        smtp_user_row.set_text(smtp.get("user", ""))
+        smtp_user_row.connect("changed", self._on_smtp_user_changed)
+        grp_email.add(smtp_user_row)
+        smtp_pass_row = Adw.PasswordEntryRow(title="SMTP password")
+        smtp_pass_row.set_text(smtp.get("password", ""))
+        smtp_pass_row.connect("changed", self._on_smtp_password_changed)
+        grp_email.add(smtp_pass_row)
+        smtp_from_row = Adw.EntryRow(title="From address")
+        smtp_from_row.set_text(smtp.get("from_addr", ""))
+        smtp_from_row.connect("changed", self._on_smtp_from_changed)
+        grp_email.add(smtp_from_row)
+        page.add(grp_email)
+
+    def _on_morning_enabled_changed(self, row, _):
+        Config.update(morning_briefing={**Config.morning_briefing(), "enabled": row.get_active()})
+
+    def _on_morning_time_changed(self, row):
+        t = (row.get_text() or "").strip() or "07:00"
+        if len(t) >= 4 and ":" in t:
+            Config.update(morning_briefing={**Config.morning_briefing(), "time": t})
+
+    def _on_morning_depth_changed(self, row, _):
+        depth = "extended" if row.get_selected() == 1 else "brief"
+        Config.update(morning_briefing={**Config.morning_briefing(), "depth": depth})
+
+    def _on_scheduled_enabled_changed(self, row, _):
+        Config.update(scheduled_briefing={**Config.scheduled_briefing(), "enabled": row.get_active()})
+
+    def _on_scheduled_depth_changed(self, row, _):
+        depth = "extended" if row.get_selected() == 1 else "brief"
+        Config.update(scheduled_briefing={**Config.scheduled_briefing(), "depth": depth})
+
+    def _on_email_default_to_changed(self, row):
+        Config.update(email={**Config.email_config(), "default_to": row.get_text().strip()})
+
+    def _on_email_method_changed(self, row, _):
+        method = "smtp" if row.get_selected() == 1 else "mailto"
+        Config.update(email={**Config.email_config(), "method": method})
+
+    def _on_smtp_host_changed(self, row):
+        Config.update(email={"smtp": {**Config.email_config().get("smtp", {}), "host": row.get_text().strip()}})
+
+    def _on_smtp_user_changed(self, row):
+        Config.update(email={"smtp": {**Config.email_config().get("smtp", {}), "user": row.get_text().strip()}})
+
+    def _on_smtp_password_changed(self, row):
+        Config.update(email={"smtp": {**Config.email_config().get("smtp", {}), "password": row.get_text()}})
+
+    def _on_smtp_from_changed(self, row):
+        Config.update(email={"smtp": {**Config.email_config().get("smtp", {}), "from_addr": row.get_text().strip()}})
 
     # ── Appearance ───────────────────────────────────────────────────────────
 
@@ -369,6 +490,73 @@ class SettingsDialog(Adw.PreferencesWindow):
         grp.add(art_days)
 
         page.add(grp)
+
+    # ── Prompts ──────────────────────────────────────────────────────────────
+
+    def _build_prompts_page(self):
+        page = Adw.PreferencesPage(title="Prompts", icon_name="edit-plain-text-symbolic")
+        self.add(page)
+
+        for meta in PROMPTS_META:
+            prompt_id = meta["id"]
+            grp = Adw.PreferencesGroup(
+                title=meta["title"],
+                description=GLib.markup_escape_text(
+                    meta["explanation"] + "\n\nWhen it's run: " + meta["when_run"]
+                ),
+            )
+
+            # Multi-line text
+            text_view = Gtk.TextView()
+            text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            text_view.set_left_margin(8)
+            text_view.set_right_margin(8)
+            text_view.set_top_margin(8)
+            text_view.set_bottom_margin(8)
+            text_view.set_hexpand(True)
+            buf = text_view.get_buffer()
+            buf.set_text(get_prompt(prompt_id))
+
+            scrolled = Gtk.ScrolledWindow()
+            scrolled.set_min_content_height(140)
+            scrolled.set_max_content_height(280)
+            scrolled.set_propagate_natural_height(True)
+            scrolled.set_child(text_view)
+
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            reset_btn = Gtk.Button(label="Reset to default")
+            reset_btn.connect("clicked", self._on_prompt_reset, prompt_id, buf)
+            apply_btn = Gtk.Button(label="Apply")
+            apply_btn.add_css_class("suggested-action")
+            apply_btn.connect("clicked", self._on_prompt_apply, prompt_id, buf)
+
+            btn_box.append(reset_btn)
+            btn_box.append(apply_btn)
+
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            box.append(scrolled)
+            box.append(btn_box)
+
+            row = Adw.PreferencesRow()
+            row.set_child(box)
+            grp.add(row)
+            page.add(grp)
+
+    def _on_prompt_apply(self, btn, prompt_id, buf):
+        start, end = buf.get_bounds()
+        text = buf.get_text(start, end, False)
+        prompts = dict(Config.prompts())
+        prompts[prompt_id] = text
+        Config.update(prompts=prompts)
+        self.add_toast(Adw.Toast(title="Prompt saved"))
+
+    def _on_prompt_reset(self, btn, prompt_id, buf):
+        default_text = get_default_prompt(prompt_id)
+        buf.set_text(default_text)
+        prompts = dict(Config.prompts())
+        prompts.pop(prompt_id, None)
+        Config.update(prompts=prompts)
+        self.add_toast(Adw.Toast(title="Reset to default"))
 
     # ── Topics ────────────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Callable
 from storage.config import get_db_path, Config
 
 # Current schema version after all migrations. Bump when adding a new migration.
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 def _now() -> str:
@@ -221,10 +221,21 @@ def _migration_3(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _migration_4(conn: sqlite3.Connection) -> None:
+    """Scheduler state (e.g. last_morning_briefing_date) for once-per-day morning briefings."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scheduler_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+
+
 _MIGRATIONS: List[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
+    (4, _migration_4),
 ]
 
 
@@ -335,6 +346,31 @@ def set_source_check_time(tier: int, checked_at: str = None) -> None:
         conn.execute(
             "INSERT OR REPLACE INTO source_check_log (tier, checked_at) VALUES (?, ?)",
             (tier, checked_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_scheduler_state(key: str) -> Optional[str]:
+    """Return value for a scheduler state key (e.g. last_morning_briefing_date), or None."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT value FROM scheduler_state WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def set_scheduler_state(key: str, value: str) -> None:
+    """Set a scheduler state key (e.g. last_morning_briefing_date = YYYY-MM-DD)."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO scheduler_state (key, value) VALUES (?, ?)",
+            (key, value),
         )
         conn.commit()
     finally:

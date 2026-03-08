@@ -31,6 +31,15 @@ DEFAULT_CONFIG = {
         "sentinel_min_interval_minutes": 5,
         "other_sources_min_interval_minutes": 20,
     },
+    "morning_briefing": {
+        "enabled": False,
+        "time": "07:00",
+        "depth": "brief",
+    },
+    "scheduled_briefing": {
+        "enabled": True,
+        "depth": "brief",
+    },
     "notifications": {
         "enabled": True,
         "min_severity": 3,
@@ -55,6 +64,18 @@ DEFAULT_CONFIG = {
     "header": {
         "show_gpu_status": True,   # GPU/VRAM or CPU/RAM when no GPU
         "show_model_name": True,   # current model in parentheses
+    },
+    "prompts": {},  # optional overrides: prompt_id -> full text (see analysis/briefing PROMPTS_META)
+    "email": {
+        "default_to": "",
+        "method": "mailto",
+        "smtp": {
+            "host": "",
+            "port": 587,
+            "user": "",
+            "password": "",
+            "from_addr": "",
+        },
     },
 }
 
@@ -169,6 +190,18 @@ class Config:
         return cls.get().get("schedule", {})
 
     @classmethod
+    def morning_briefing(cls) -> dict:
+        return cls.get().get("morning_briefing", {})
+
+    @classmethod
+    def scheduled_briefing(cls) -> dict:
+        return cls.get().get("scheduled_briefing", {})
+
+    @classmethod
+    def email_config(cls) -> dict:
+        return cls.get().get("email", {})
+
+    @classmethod
     def notifications(cls) -> dict:
         return cls.get().get("notifications", {})
 
@@ -191,3 +224,8 @@ class Config:
     @classmethod
     def header(cls) -> dict:
         return cls.get().get("header", {})
+
+    @classmethod
+    def prompts(cls) -> dict:
+        """User overrides for AI prompts. Keys match PROMPTS_META ids in analysis.briefing."""
+        return cls.get().get("prompts", {})

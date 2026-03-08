@@ -25,6 +25,11 @@ from ui.quiet_view import QuietView
 from ui.briefing_view import BriefingDetailView
 from ui.chat_view import ChatView
 from ui.settings_dialog import open_settings
+from email_briefing import (
+    email_briefing_mailto,
+    email_briefing_smtp,
+    get_briefing_subject,
+)
 
 SEVERITY_LABELS = {1: "ROUTINE", 2: "LOW", 3: "MODERATE", 4: "HIGH", 5: "CRITICAL"}
 
@@ -348,11 +353,12 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         menu.append("Regenerate", "briefing.regenerate")
         menu.append("Go deeper", "briefing.go_deeper")
         menu.append("Mark unread", "briefing.mark_unread")
+        menu.append("Email…", "briefing.email")
         menu.append("Delete", "briefing.delete")
         self._briefing_context_menu = menu
 
         ag = Gio.SimpleActionGroup()
-        for name in ("regenerate", "go_deeper", "mark_unread", "delete"):
+        for name in ("regenerate", "go_deeper", "mark_unread", "email", "delete"):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", self._on_briefing_context_activate, name)
             ag.add_action(action)
@@ -377,6 +383,8 @@ class GeoPulseWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._refresh_row, briefing_id)
             GLib.idle_add(self._update_unread_badge)
             self._toast_overlay.add_toast(Adw.Toast(title="Marked unread", timeout=2))
+        elif action == "email":
+            self._on_email_briefing(briefing_id)
         elif action == "delete":
             was_selected = (
                 self._content_stack.get_visible_child_name() == "briefing"
@@ -388,6 +396,75 @@ class GeoPulseWindow(Adw.ApplicationWindow):
                 self._content_stack.set_visible_child_name("quiet")
             GLib.idle_add(self._load_briefings)
             self._toast_overlay.add_toast(Adw.Toast(title="Briefing deleted", timeout=2))
+
+    def _on_email_briefing(self, briefing_id: int):
+        """Email this briefing: mailto or SMTP from config. If no default recipient, show dialog."""
+        briefing = db.get_briefing(briefing_id)
+        if not briefing:
+            return
+        email_cfg = Config.email_config()
+        to = (email_cfg.get("default_to") or "").strip()
+        method = email_cfg.get("method", "mailto")
+
+        if not to:
+            # Show dialog to enter recipient
+            dialog = Adw.Dialog(transient_for=self, heading="Email briefing")
+            dialog.set_default_size(360, -1)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            box.set_margin_top(12)
+            box.set_margin_bottom(12)
+            box.set_margin_start(20)
+            box.set_margin_end(20)
+            entry = Adw.EntryRow(title="To")
+            box.append(entry)
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            cancel_btn = Gtk.Button(label="Cancel")
+            send_btn = Gtk.Button(label="Email")
+            send_btn.add_css_class("suggested-action")
+            cancel_btn.connect("clicked", lambda b: dialog.close())
+            def do_send(b):
+                to_addr = entry.get_text().strip()
+                dialog.close()
+                if to_addr:
+                    self._send_briefing_email(briefing, to_addr, method)
+            send_btn.connect("clicked", do_send)
+            entry.connect("activate", do_send)
+            btn_box.append(cancel_btn)
+            btn_box.append(send_btn)
+            box.append(btn_box)
+            dialog.set_content(box)
+            dialog.present()
+            entry.grab_focus()
+            return
+        self._send_briefing_email(briefing, to, method)
+
+    def _send_briefing_email(self, briefing: dict, to: str, method: str):
+        if method == "smtp":
+            def run():
+                try:
+                    email_briefing_smtp(briefing, to)
+                    GLib.idle_add(
+                        lambda: self._toast_overlay.add_toast(Adw.Toast(title=f"Briefing sent to {to}", timeout=3))
+                    )
+                except Exception as e:
+                    logger.exception("SMTP send failed")
+                    GLib.idle_add(
+                        lambda: self._toast_overlay.add_toast(
+                            Adw.Toast(title=f"Send failed: {str(e)[:60]}", timeout=5)
+                        )
+                    )
+            threading.Thread(target=run, daemon=True).start()
+        else:
+            uri = email_briefing_mailto(briefing, to)
+            if not uri:
+                self._toast_overlay.add_toast(Adw.Toast(title="No recipient set", timeout=3))
+                return
+            try:
+                Gio.AppInfo.launch_default_for_uri(uri, None)
+                self._toast_overlay.add_toast(Adw.Toast(title="Opening mail client…", timeout=2))
+            except Exception as e:
+                logger.debug("Launch mailto failed: %s", e)
+                self._toast_overlay.add_toast(Adw.Toast(title="Could not open mail client", timeout=3))
 
     def _on_regenerate_briefing(self, briefing_id: int):
         """Regenerate this briefing with current depth (from config) in a background thread."""
