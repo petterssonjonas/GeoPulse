@@ -4,17 +4,30 @@
 
 *Version 0.91.0 (beta) — [GNOME-style versioning](https://handbook.gnome.org/release-planning.html): 0.x = pre-1.0 beta, 1.0 = first stable.*
 
-A background service ingests curated news sources, transcripts of videos and podcasts, official government feeds and more. It Scores severity, generates analytically rich briefings using a local LLM (Ollama serve, app handles AI loading), and delivers them as a native GNOME desktop application with inline Q&A.
+---
+
+## ⚠ Beta notice
+
+GeoPulse is in **beta**. Expect rough edges:
+
+- **AI prompts** have not been fully optimized; briefing quality and format may improve in future releases.
+- **Data scrapers** (RSS and web fetchers) have not been fully verified across all sources; some feeds may fail or change without notice.
+
+Feedback and contributions are welcome.
+
+---
+
+## What it does
+
+A tiered background process ingests curated news sources (RSS and web). It scores severity, runs a novelty check to avoid duplicate briefings, and generates analytically structured briefings using a local LLM (Ollama) or an optional cloud API (OpenAI, Anthropic). The native GNOME desktop app shows severity-ranked briefings and inline Q&A with your model. No accounts, no telemetry—everything can run on your machine.
 
 ---
 
 ## Preview
 
-
 | Briefing list & detail | Q&A chat with local LLM |
 | ---------------------- | ----------------------- |
 | ![GeoPulse briefing view](./Geopulse1.png) | ![GeoPulse Q&A chat](./Geopulse2.png)       |
-
 
 *Severity-ranked briefings in the sidebar; click to read the full digest. Ask follow-up questions in context with your local model (Ollama).*
 
@@ -23,263 +36,157 @@ A background service ingests curated news sources, transcripts of videos and pod
 ## Features
 
 - 🔴 **Severity-ranked briefings** — auto-classified from routine to breaking
-- 📰 **Curated sources** — Reuters, BBC, Al Jazeera, AP, Foreign Policy, UN, US State Dept, UK FCO, NATO, EU EEAS, Chinese MFA, and more
-- 🧠 **Local LLM analysis** — runs on Ollama (Qwen3, Mistral, Llama3, etc.) with optional cloud API fallback
-- 💬 **Inline Q&A** — ask follow-up questions against the briefing context, streamed in real time
-- 🔔 **Desktop notifications** — breaking alerts via libnotify; click to open the briefing
+- 📰 **Curated sources** — Reuters, BBC, Al Jazeera, AP, Foreign Policy, CFR, War on the Rocks, Bellingcat, and more (tiered: sentinel → context → official)
+- 🧠 **Local or cloud LLM** — Ollama (Qwen3, Mistral, Llama, etc.) or OpenAI / Anthropic API
+- 💬 **Inline Q&A** — follow-up questions against the briefing context, streamed in real time
+- 🌅 **Morning briefing** — optional daily digest at a time you choose (overnight news)
+- ⏱ **Scheduled briefings** — interval-based generation; both morning and scheduled can use brief or extended depth
+- 📧 **Email a briefing** — send via mailto or SMTP from the context menu
+- ✏️ **Editable AI prompts** — customize system and briefing prompts in Settings → Prompts
+- 🔔 **Desktop notifications** — breaking alerts via libnotify; optional sound
 - 🔒 **Fully private** — no accounts, no telemetry, no cloud required
-- ⚙️ **Zero-maintenance** — edit a YAML file to add sources or topics
+- ⚙️ **Topics & sources** — add topics in Settings; sources live in `data/sources.yaml`
 
 ---
 
 ## Requirements
-
 
 | Component  | Version    |
 | ---------- | ---------- |
 | Python     | 3.10+      |
 | GTK4       | 4.0+       |
 | Libadwaita | 1.0+       |
-| Ollama     | Any recent |
+| Ollama     | Any recent (for local LLM) |
 | libnotify  | Any        |
-
 
 ---
 
 ## Installation
 
-### 1. System packages
+### Option 1: Flatpak (recommended)
 
-**Ubuntu/Debian:**
+Download the `.flatpak` bundle from the [latest release](https://github.com/petterssonjonas/GeoPulse/releases) and install:
 
 ```bash
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libnotify-bin python3-venv
+flatpak install geopulse-0.91.0.flatpak
+flatpak run io.geopulse.app
 ```
 
-**Fedora:**
+(Ollama must be installed and running separately for local AI.)
+
+### Option 2: .deb (Ubuntu / Debian)
+
+Download `geopulse-0.91.0.deb` from the [releases](https://github.com/petterssonjonas/GeoPulse/releases) page, then:
 
 ```bash
-sudo dnf install python3-gobject gtk4 libadwaita libnotify
+sudo apt install ./geopulse-0.91.0.deb
+geopulse
 ```
 
-**Arch:**
+### Option 3: .rpm (Fedora / RHEL)
+
+Download the `.rpm` from the [releases](https://github.com/petterssonjonas/GeoPulse/releases) page, then:
 
 ```bash
-sudo pacman -S python-gobject gtk4 libadwaita libnotify
+sudo dnf install ./geopulse-0.91.0-1.fc*.rpm
+geopulse
 ```
 
-### 2. Ollama
+### Option 4: From source
 
-Install from [ollama.ai](https://ollama.ai) and pull your model:
+**1. System packages**
+
+- **Ubuntu/Debian:** `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libnotify-bin python3-venv`
+- **Fedora:** `sudo dnf install python3-gobject gtk4 libadwaita libnotify`
+- **Arch:** `sudo pacman -S python-gobject gtk4 libadwaita libnotify`
+
+**2. Ollama** (for local LLM)
+
+Install from [ollama.ai](https://ollama.ai) and pull a model, e.g.:
 
 ```bash
-ollama pull qwen3:12b
-# or for lighter use:
-ollama pull phi3:mini
+ollama pull qwen3:8b
 ```
 
-### 3. GeoPulse
+**3. GeoPulse**
 
 ```bash
-git clone https://github.com/yourname/geopulse
-cd geopulse
-./setup.sh --install
+git clone https://github.com/petterssonjonas/GeoPulse.git
+cd GeoPulse
+python3 -m venv .venv
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+pip install -r requirements.txt
+python main.py
 ```
 
 ---
 
 ## Usage
 
-### Run everything (recommended)
-
-```bash
-./setup.sh --run-both
-```
-
-This starts the background service then opens the UI. The service keeps running in the background fetching and generating briefings.
-
-### Service only (background daemon)
-
-```bash
-./setup.sh --run-service
-# or via systemd (see below)
-```
-
-### UI only (reads from existing DB)
-
-```bash
-./setup.sh --run-app
-```
-
-### Debug / CLI tools
-
-```bash
-python main.py --fetch       # Run one ingestion cycle
-python main.py --generate    # Generate one briefing from recent articles
-python main.py --list        # List briefings in terminal
-python main.py --briefing 5  # Open app at briefing #5
-```
+- **Run the app** — `geopulse` (if installed from a package) or `python main.py` (from source). The scheduler runs while the app is open: it checks sources on an interval and generates briefings (scheduled and/or morning, if enabled in Settings).
+- **Open a specific briefing** — `geopulse --briefing 5` or `python main.py --briefing 5`
+- **CLI (no GUI):**
+  - `python main.py --fetch` — run one ingestion cycle
+  - `python main.py --generate` — generate one briefing from recent articles
+  - `python main.py --list` — list recent briefings in the terminal
 
 ---
 
 ## Configuration
 
-Config lives at `~/.config/geopulse/config.yaml` (created on first run).
+Config is created on first run at `~/.config/geopulse/config.yaml`. Key sections:
 
-### Change LLM model
+- **llm** — `provider` (ollama / openai / anthropic), `model`, `base_url`, `api_key`
+- **schedule** — `sentinel_interval_minutes`, `briefing_interval_minutes`, throttle and retention
+- **morning_briefing** — `enabled`, `time` (e.g. `"07:00"`), `depth` (brief / extended)
+- **scheduled_briefing** — `enabled`, `depth`
+- **notifications** — `enabled`, `min_severity`, `sound_on_briefing`
+- **email** — `default_to`, `method` (mailto / smtp), SMTP settings for "Email briefing"
+- **prompts** — overrides for AI prompts (see Settings → Prompts)
 
-```yaml
-llm:
-  provider: ollama
-  model: mistral:7b       # any model you've pulled in Ollama
-  base_url: http://localhost:11434
-```
-
-### Use a cloud API instead
-
-```yaml
-llm:
-  provider: openai
-  model: gpt-4o-mini
-  api_key: sk-...
-  base_url: https://api.openai.com/v1
-
-# or Anthropic:
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-6
-  api_key: sk-ant-...
-```
-
-### Add a source
-
-```yaml
-sources:
-  - name: Kyiv Independent
-    url: https://kyivindependent.com/feed/
-    type: rss
-    category: media
-    region: ukraine
-    priority: high
-    enabled: true
-```
-
-### Adjust schedule
-
-```yaml
-schedule:
-  fetch_interval_minutes: 15        # how often to check sources
-  briefing_interval_minutes: 60     # how often to generate a digest briefing
-  breaking_check_interval_minutes: 5  # how often to check for breaking news
-```
-
----
-
-## Run as a systemd user service
-
-Create `~/.config/systemd/user/geopulse.service`:
-
-```ini
-[Unit]
-Description=GeoPulse Background Service
-After=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/path/to/geopulse
-ExecStart=/path/to/geopulse/.venv/bin/python service.py
-Restart=on-failure
-RestartSec=30
-
-[Install]
-WantedBy=default.target
-```
-
-Then:
-
-```bash
-systemctl --user enable geopulse
-systemctl --user start geopulse
-```
+Sources and tiers are defined in **`data/sources.yaml`** (edit and restart). Topics are managed in the app via **Settings → Topics**.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Background Service (service.py)                    │
-│  ┌──────────┐  ┌────────────┐  ┌─────────────────┐  │
-│  │ Scraper  │→ │  SQLite DB │← │  LLM (Ollama)   │  │
-│  │ (RSS +   │  │ articles   │  │  Briefing gen   │  │
-│  │  HTML)   │  │ briefings  │  │  Severity score │  │
-│  └──────────┘  │ convos     │  └─────────────────┘  │
-│                └──────┬─────┘                       │
-│                       │ notify-send                 │
-└───────────────────────┼─────────────────────────────┘
-                        ↓
-              [Desktop Notification]
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│  GTK4 App (main.py + ui/)                           │
-│  ┌─────────────┐  ┌──────────────────────────────┐  │
-│  │ Briefing    │  │  Detail View                 │  │
-│  │ Sidebar     │→ │  Headline, Summary, Body     │  │
-│  │ (severity   │  │  Sources, Suggested Qs       │  │
-│  │  ranked)    │  │                              │  │
-│  │             │  │  ┌───────────────────────┐   │  │
-│  │             │  │  │  Chat / Q&A (Ollama   │   │  │
-│  │             │  │  │  streaming, context-  │   │  │
-│  │             │  │  │  aware)               │   │  │
-│  │             │  │  └───────────────────────┘   │  │
-│  └─────────────┘  └──────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  GeoPulse app (single process)                                  │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │  Scheduler (scraping/scheduler.py)                           ││
+│  │  Sentinel → tier 2/3 on severity → novelty check → briefing ││
+│  └──────────────────────────┬──────────────────────────────────┘│
+│                              │                                    │
+│  ┌──────────────────────────▼──────────────────────────────────┐│
+│  │  SQLite (~/.local/share/geopulse/geopulse.db)                ││
+│  │  articles, briefings, conversations, user_topics, state       ││
+│  └──────────────────────────┬──────────────────────────────────┘│
+│                              │                                    │
+│  ┌──────────────────────────▼──────────────────────────────────┐│
+│  │  LLM: Ollama (local) or OpenAI / Anthropic API               ││
+│  │  Briefing generation, novelty check, Q&A streaming           ││
+│  └──────────────────────────┬──────────────────────────────────┘│
+│                              │ libnotify                          │
+│  ┌──────────────────────────▼──────────────────────────────────┐│
+│  │  GTK4 / Libadwaita UI (ui/)                                  ││
+│  │  Sidebar (briefings) → Detail (headline, body, Q&A, email)   ││
+│  └──────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## Adding Providers
-
-To add a new LLM provider, subclass `LLMProvider` in `llm.py`:
-
-```python
-class MyProvider(LLMProvider):
-    def chat(self, messages, stream=False) -> str: ...
-    def stream_chat(self, messages) -> Iterator[str]: ...
-```
-
-Then add it to the `create_provider()` factory.
 
 ---
 
 ## Roadmap
 
-- [x] Recognize if system has ollama, instructions if not. Loads selected model on demand.
-- [ ] Implement system scanning to determine the mest AI model to use, and suggest downloading it. 
-- [x] Ollama LAN / home server connection
-- [x] OpenAI / Anthropic API integration (add grok?)
-- [x] Go deeper button (regenerate with thinking)
-- [x] AI suggested things to watch for
-- [x] AI suggested follow up questions
-- [x] Ask follow ups / Q&A
-- [x] Paralell scraping and spam protection
-- [x] Article deduplication and cleanup sources before combined to brief
-- [x] Implement youtube-transcript-api for commentary (think ryan mcbeth, william spaniel, news reports, battle lines, ukraine the latest, Council on foreign relations, that kind of thing) for informing AI -  analyst comments, context/history/opinion
-- [x] Systemd user service integration
-- [ ] Flatpak packaging
-- [ ] RPM and repos packaging
-- [ ] deb packaging
-- [ ] AUR-git package
-- [ ] Analyst and leadership opinion tracking
-- [ ] Other audio podcasts transcripts extraction
-- [ ] Export briefings as PDF/Markdown
-- [ ] X/Twitter integration (X API too expensive. Select Alternatives)
-- [ ] Historical context knowledge base (community-contributed)
-- [ ] Ongoing AI prompt tweaking
-- [ ] Windows app (paid/premium)
-- [ ] Macos app (paid/premium)
-- [ ] Android app (paid/premium)
-- [ ] iOS app (paid/premium)
+- [x] Severity-ranked briefings, tiered scraping, novelty check
+- [x] Ollama + OpenAI / Anthropic API
+- [x] Inline Q&A, "Go deeper," suggested questions and watch indicators
+- [x] Morning briefing (time + depth), scheduled briefing toggle + depth
+- [x] Email briefing (mailto / SMTP), editable AI prompts in Settings
+- [x] Flatpak, .rpm, .deb, AppImage via GitHub Actions
+- [ ] Ongoing AI prompt optimization and source verification
+- [ ] Windows / macOS / mobile (later)
 
 ---
 
