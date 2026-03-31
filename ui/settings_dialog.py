@@ -20,17 +20,18 @@ from analysis.briefing import PROMPTS_META, get_prompt, get_default_prompt
 logger = logging.getLogger(__name__)
 
 
-def open_settings(parent_window, on_appearance_changed=None):
-    dialog = SettingsDialog(parent_window, on_appearance_changed=on_appearance_changed)
+def open_settings(parent_window, on_appearance_changed=None, on_schedule_changed=None):
+    dialog = SettingsDialog(parent_window, on_appearance_changed=on_appearance_changed, on_schedule_changed=on_schedule_changed)
     dialog.present()
 
 
 class SettingsDialog(Adw.PreferencesWindow):
-    def __init__(self, parent, on_appearance_changed=None):
+    def __init__(self, parent, on_appearance_changed=None, on_schedule_changed=None):
         super().__init__(transient_for=parent, modal=True)
         self.set_title("GeoPulse Settings")
         self.set_default_size(500, 600)
         self._on_appearance_changed_cb = on_appearance_changed
+        self._on_schedule_changed_cb = on_schedule_changed
         self._ollama = OllamaManager(base_url=Config.llm().get("base_url", OLLAMA_DEFAULT_BASE_URL))
         self._build()
 
@@ -289,15 +290,18 @@ class SettingsDialog(Adw.PreferencesWindow):
 
     def _on_morning_enabled_changed(self, row, _):
         Config.update(morning_briefing={**Config.morning_briefing(), "enabled": row.get_active()})
+        self._emit_schedule_changed()
 
     def _on_morning_time_changed(self, row):
         t = (row.get_text() or "").strip() or "07:00"
         if len(t) >= 4 and ":" in t:
             Config.update(morning_briefing={**Config.morning_briefing(), "time": t})
+            self._emit_schedule_changed()
 
     def _on_morning_depth_changed(self, row, _):
         depth = "extended" if row.get_selected() == 1 else "brief"
         Config.update(morning_briefing={**Config.morning_briefing(), "depth": depth})
+        self._emit_schedule_changed()
 
     def _on_scheduled_enabled_changed(self, row, _):
         Config.update(scheduled_briefing={**Config.scheduled_briefing(), "enabled": row.get_active()})
@@ -461,6 +465,10 @@ class SettingsDialog(Adw.PreferencesWindow):
     def _emit_appearance_changed(self):
         if hasattr(self, "_on_appearance_changed_cb") and self._on_appearance_changed_cb:
             self._on_appearance_changed_cb()
+
+    def _emit_schedule_changed(self):
+        if hasattr(self, "_on_schedule_changed_cb") and self._on_schedule_changed_cb:
+            self._on_schedule_changed_cb()
 
     # ── Data retention ────────────────────────────────────────────────────────
 

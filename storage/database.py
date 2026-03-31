@@ -553,6 +553,8 @@ def run_retention_cleanup() -> None:
         ids_to_remove = [r[0] for r in rows]
         if ids_to_remove:
             placeholders = ",".join("?" * len(ids_to_remove))
+            # Null out parent_briefing_id so no briefing references one we're about to delete (avoids FK violation)
+            conn.execute(f"UPDATE briefings SET parent_briefing_id = NULL WHERE parent_briefing_id IN ({placeholders})", ids_to_remove)
             conn.execute(f"DELETE FROM conversations WHERE briefing_id IN ({placeholders})", ids_to_remove)
             conn.execute(f"DELETE FROM briefings WHERE id IN ({placeholders})", ids_to_remove)
         # Articles older than article_retention_days (by fetched_at)

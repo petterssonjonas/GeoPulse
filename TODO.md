@@ -1,7 +1,22 @@
 # GeoPulse Roadmap
 
+
+### Implement
+## Brave news search API
+https://api-dashboard.search.brave.com/documentation/services/news-search
+I have a key, rate limited to 50 requests per second and 1000 per month. Shared with my OpenClaw and Open-webui, and Other keys. After 1000 requests starts costing money.
+It costs $5 per 1000 requests, but the first 1000 each month is free. I've set a limit at $6 per month.
+
+
+
+### For AI:
+
 Each item includes implementation notes ("note to self") for context continuity across sessions.
 Items marked **ASK USER** need a decision before implementation.
+
+---
+
+**Prompting work is tracked separately** → see [`PROMPTING_TODO.md`](PROMPTING_TODO.md). Prompt design and programming are different intellectual challenges; keep them in their own tracks.
 
 ---
 
@@ -79,6 +94,65 @@ broken, and tests for hot paths. When in doubt, choose the simpler, more predict
 - **17. Model selection when another model is already loaded**
   When Ollama already has a model loaded (e.g. user's coding assistant), GeoPulse should not force-switch or conflict. Options: (a) use whatever is loaded for this run and document it, (b) recommend a smaller default model (e.g. qwen3:4b, gemma3:4b) that can coexist or load on demand, (c) show a clear indicator in Settings when the active model differs from the configured default. Decide behavior and document in MODELS.md.
   *Files:* `ollama_manager.py`, `ui/settings_dialog.py`, `MODELS.md`
+
+---
+
+## V2 scope
+
+After v1 is stable and shipped, v2 focuses on: **app-flow and scheduler transparency**, **backend API** (enabler for cross-platform), **Windows and macOS desktop apps**, and **deferred features** from the main roadmap.
+
+### App flow and scheduler (early v2)
+
+- **App-flow optimizations**  
+  Review `docs/app-flow.md` and actual code paths; optimize hot paths and avoid redundant work.  
+  *Implementation:* Defer non-critical work on window init so first paint is fast; avoid duplicate/heavy work on briefing selection; keep scheduler ticks bounded; reschedule only what’s needed when config changes (morning is done; add sentinel/briefing interval reschedule). Optional: simple “flow” or health view showing which step is running.  
+  *Files:* `docs/app-flow.md`, `ui/window.py`, `scraping/scheduler.py`, `storage/database.py`
+
+- **Background / scraping timers: when what runs**  
+  Make it clear when each background action runs and reschedule on config change.  
+  *Implementation:* Show “Next sentinel: in X min · Next briefing: in Y min · Morning: HH:MM” in status bar or Settings. Reschedule sentinel and briefing timers when user changes intervals in Settings (not just morning). Single place for next-run calculation to avoid drift/double-fire. Optional: per-source or per-tier schedule view when more source types exist (e.g. X every 30 min).  
+  *Files:* `scraping/scheduler.py`, `storage/config.py`, `ui/settings_dialog.py`, `ui/window.py`
+
+### Backend API (prerequisite for Windows / Mac / mobile)
+
+- **Extract Python backend into a local REST API** (FastAPI)  
+  GTK app talks to API instead of importing storage/scraping directly; enables headless `--serve` and remote/multi-client use.  
+  *Implementation:* New `api/` package. Endpoints: briefings, articles, chat, config, status (scheduler state, model, GPU), models. WebSocket for real-time push (new briefing, status). Backwards compat: GTK can still use direct imports if API not running.  
+  *Files:* new `api/` package, `main.py`, refactor `ui/window.py` to API client.  
+  *See:* “Architecture — Backend API Extraction” below for full detail.
+
+- **Authentication for remote access**  
+  Token-based auth when API is exposed beyond localhost; token in config, copy from Settings.  
+  *Files:* `api/auth.py`, `storage/config.py`
+
+### Windows and macOS desktop versions
+
+- **Tauri desktop app (Windows + macOS)**  
+  Native desktop apps for Windows and Mac, sharing the same Python backend.  
+  *Implementation:* Tauri (Rust shell) + Svelte or React front end. Single codebase for both platforms. App talks to Python backend API (bundled as sidecar via PyInstaller/Nuitka, or remote). Native window chrome, system tray, auto-updates. Distribute via website and optionally Microsoft Store / Mac App Store.  
+  *Prerequisite:* Backend API extraction complete.  
+  *Strategy:* Linux stays free (GTK, open source); Windows/macOS can be paid (one-time or subscription).  
+  *See:* “Platform Expansion (Paid)” below for pricing and distribution.
+
+- **Licensing and repo usage for paid versions** *(decided: see **Licensing** section below)*  
+  Single repo, all GPLv3; Windows/macOS builds are the same code, packaged and sold. No dual-license or closed repo. Document in README or CONTRIBUTING that binaries may be sold and source remains at the repo; ensure LICENSE and any store listings comply.
+  *Files:* `LICENSE`, `README.md`, optional `docs/COMMERCIAL.md` or CONTRIBUTING note
+
+### Other v2 features (from roadmap)
+
+These remain in the main “New Features” list; v2 is the right time to implement them once core and cross-platform are in place.
+
+- **News category tabs** (Geopolitics, Tech, Local, Markets, Custom) — per-tab sources, topics, and briefing schedule.
+- **Markets watcher** — currencies, commodities, indices; feed into briefs; own tab/schedule.
+- **Context window max** — cap prompt size for brief generation when mixing articles, markets, cross-tab data.
+- **Story update tracking** (threaded updates) — append updates to existing briefings instead of new cards; delta summary, “UPDATED” badge.
+- **Resource-aware deferral** — skip local LLM when GPU busy; defer generation until idle.
+- **Event-based briefing** (if not done in v1) — one card per event; cluster articles by event; cap per cycle.
+- **Scheduled brief at set times** — multiple times per day (e.g. 08:00, 13:00) in addition to morning.
+- **Do Not Disturb** — time ranges; no notifications and optionally no generation during DND.
+- **Source manager in settings** — full source browser, tier assignment, health, add custom sources.
+- **Expert commentary** (on demand) — YouTube transcripts, think tanks, podcasts, historical context.
+- **Other:** Political leaning, map visualization, confidence calibration, JavaScript-rendered scraping (Playwright optional), briefing history search (FTS5), desktop notifications with actions (open briefing from notification). AI-powered triage, “What did I miss” digest, “Where can I follow this closely?” suggested question, export (markdown/PDF).
 
 ---
 
@@ -477,6 +551,8 @@ remote clients. Optional: mTLS for serious deployments.
 
 ## Platform Expansion (Paid)
 
+**V2 desktop targets:** Windows and macOS (Tauri app) are in **V2 scope** above; mobile and cloud are later.
+
 Strategy: Linux stays free (GTK4, open source). Other platforms get native paid apps
 sharing the same Python backend API.
 
@@ -502,10 +578,11 @@ This is the long-term monetization play.
 
 ## Licensing
 
-Current recommendation: **GPLv3** for the Linux/core version.
+**Decision: all GPL-3. Single repo. Packaged binaries (Linux, Windows, macOS) can be sold.**
 
-- Keeps it open source, builds community
-- GPLv3 copyleft means competitors can't close-source your work
-- Paid platform apps can use the same backend (you own the copyright)
-- Cloud service is a natural upsell
+- Entire project (core, backend, Linux GTK client, and future Windows/macOS Tauri client) is **GPLv3**.
+- One public repo; no separate closed or commercial repo for paid platforms.
+- “Paid” = sold binaries and optional support; buyers receive the same GPLv3 code (e.g. via repo link). Selling is permitted under GPL.
+- Keeps it open source, builds community; copyleft prevents others from closing your work.
+- Cloud / hosted service remains a separate potential upsell (same license for the code they run).
 

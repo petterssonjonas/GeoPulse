@@ -241,7 +241,11 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         GLib.idle_add(self.refresh_header)
 
         settings_btn = Gtk.Button(icon_name="preferences-system-symbolic", tooltip_text="Settings")
-        settings_btn.connect("clicked", lambda b: open_settings(self, on_appearance_changed=getattr(self.get_application(), "reload_appearance", None)))
+        settings_btn.connect("clicked", lambda b: open_settings(
+            self,
+            on_appearance_changed=getattr(self.get_application(), "reload_appearance", None),
+            on_schedule_changed=self._on_schedule_settings_changed,
+        ))
         header.pack_end(settings_btn)
 
         refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh")
@@ -733,6 +737,11 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         self._root_stack.set_visible_child_name("main")
         GLib.idle_add(self._load_briefings)
         GLib.idle_add(self._start_scheduler)
+
+    def _on_schedule_settings_changed(self):
+        """Called when user changes morning briefing (or other schedule) in Settings. Reschedule morning timer so it fires at the new time."""
+        if self._scheduler:
+            self._scheduler.reschedule_morning()
 
     # ── DATA LOADING ──────────────────────────────────────────────────────────
 

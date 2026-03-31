@@ -453,6 +453,14 @@ class SmartScheduler:
         self._morning_timer.start()
         logger.debug("Morning briefing next in %s s", sec)
 
+    def reschedule_morning(self):
+        """Re-read morning config and reschedule the morning timer. Call when user changes morning time/enabled/depth in Settings."""
+        if self._morning_timer:
+            self._morning_timer.cancel()
+            self._morning_timer = None
+        if self._running and Config.morning_briefing().get("enabled", False):
+            self._schedule_morning()
+
     def _tick_morning(self):
         if not self._running:
             return
