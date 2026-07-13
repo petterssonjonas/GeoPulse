@@ -18,6 +18,13 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "gzip, br, deflate",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
 }
 REQUEST_TIMEOUT = 20
 FETCHER_DELAY_SECONDS = 0.4
@@ -37,6 +44,18 @@ def _parse_feed_date(entry) -> str:
             except Exception as e:
                 logger.debug("Feed date parse fallback: %s", e)
     return _now_iso()
+
+
+def _dedupe_articles_by_url(articles: list) -> list:
+    seen = set()
+    deduped = []
+    for a in articles:
+        url = a.get("url", "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        deduped.append(a)
+    return deduped
 
 
 # ─── RSS / ATOM ───────────────────────────────────────────────────────────────
@@ -203,7 +222,7 @@ def fetch_sources_by_tier(tier: int) -> list:
             logger.error(f"  [{source['name']}] error: {e}")
         if idx + 1 < len(sources) and FETCHER_DELAY_SECONDS > 0:
             time.sleep(FETCHER_DELAY_SECONDS)
-    return all_articles
+    return _dedupe_articles_by_url(all_articles)
 
 
 def fetch_all_sources() -> list:
@@ -216,4 +235,4 @@ def fetch_all_sources() -> list:
             logger.error(f"  [{source['name']}] error: {e}")
         if idx + 1 < len(sources) and FETCHER_DELAY_SECONDS > 0:
             time.sleep(FETCHER_DELAY_SECONDS)
-    return all_articles
+    return _dedupe_articles_by_url(all_articles)
