@@ -13,6 +13,9 @@ BRIEFING_FONT_SIZE_DEFAULT = 1.0
 
 # LLM: default Ollama base URL (single source of truth)
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
+LLAMA_CPP_DEFAULT_BASE_URL = "http://localhost:8080/v1"
 
 DEFAULT_CONFIG = {
     "llm": {
@@ -21,6 +24,7 @@ DEFAULT_CONFIG = {
         "triage_model": "",
         "base_url": OLLAMA_DEFAULT_BASE_URL,
         "api_key": "",
+        "custom_backend": "openai",
         "temperature": 0.3,
     },
     "schedule": {

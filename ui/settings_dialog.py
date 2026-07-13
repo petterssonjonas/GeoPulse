@@ -9,10 +9,14 @@ import threading
 from storage.config import (
     Config,
     OLLAMA_DEFAULT_BASE_URL,
+    OPENAI_DEFAULT_BASE_URL,
+    ANTHROPIC_DEFAULT_BASE_URL,
+    LLAMA_CPP_DEFAULT_BASE_URL,
     BRIEFING_FONT_SIZE_MIN,
     BRIEFING_FONT_SIZE_MAX,
     BRIEFING_FONT_SIZE_DEFAULT,
 )
+from providers import create_provider, get_provider_options, CUSTOM_BACKENDS
 from ollama_manager import OllamaManager
 import storage.database as db
 from analysis.briefing import PROMPTS_META, get_prompt, get_default_prompt
@@ -50,16 +54,29 @@ class SettingsDialog(Adw.PreferencesWindow):
         self.add(page)
 
         cfg = Config.llm()
+        provider = cfg.get("provider", "ollama")
+        backend = cfg.get("custom_backend", "openai")
+
+        provider_ids = get_provider_options()
+        provider_labels = {
+            "ollama": "Ollama (local)",
+            "openai": "OpenAI-compatible",
+            "anthropic": "Anthropic",
+            "llama_cpp": "llama.cpp",
+            "custom": "Custom provider",
+        }
+        backend_ids = [b for b, _ in CUSTOM_BACKENDS]
+        backend_labels = [l for _, l in CUSTOM_BACKENDS]
 
         # Provider
         grp = Adw.PreferencesGroup(title="Provider")
         provider_row = Adw.ComboRow(title="LLM Provider")
         providers = Gtk.StringList()
-        for p in ["ollama", "openai", "anthropic"]:
-            providers.append(p)
+        for p in provider_ids:
+            providers.append(provider_labels.get(p, p))
         provider_row.set_model(providers)
         current = cfg.get("provider", "ollama")
-        for i, p in enumerate(["ollama", "openai", "anthropic"]):
+        for i, p in enumerate(provider_ids):
             if p == current:
                 provider_row.set_selected(i)
         provider_row.connect("notify::selected", self._on_provider_changed)
@@ -67,41 +84,47 @@ class SettingsDialog(Adw.PreferencesWindow):
         self._provider_row = provider_row
         page.add(grp)
 
+        # Custom backend
+        backend_grp = Adw.PreferencesGroup(title="Custom provider")
+        backend_row = Adw.ComboRow(title="Backend")
+        backend_list = Gtk.StringList()
+        for label in backend_labels:
+            backend_list.append(label)
+        backend_row.set_model(backend_list)
+        for i, b_id in enumerate(backend_ids):
+            if b_id == backend:
+                backend_row.set_selected(i)
+        backend_row.connect("notify::selected", self._on_custom_backend_changed)
+        self._custom_backend_row = backend_row
+        backend_grp.add(backend_row)
+        page.add(backend_grp)
+
         # Default model
         grp2 = Adw.PreferencesGroup(
             title="Default Model",
-            description=(
-                "GeoPulse only loads this model when no other model is already "
-                "running in Ollama, so it won't interrupt your coding assistant.\n\n"
-                "A small 3-4 B parameter model like <b>qwen3:4b</b> or <b>gemma3:4b</b> "
-                "is more than enough for news triage and briefing generation, and "
-                "leaves most of your VRAM free for larger models."
-            ),
+            description="Select the model for analysis and follow-up prompts.",
         )
         self._model_row = Adw.ComboRow(title="Default Analysis Model")
-        self._installed_models = self._ollama.list_models() if self._ollama.is_running() else []
-        model_list = Gtk.StringList()
-        self._model_names = list(self._installed_models)
-        if not self._model_names:
-            self._model_names = [cfg.get("model", "qwen3:8b")]
-        for name in self._model_names:
-            model_list.append(name)
-        self._model_row.set_model(model_list)
-        current_model = cfg.get("model", "qwen3:8b")
-        for i, name in enumerate(self._model_names):
-            if name == current_model:
-                self._model_row.set_selected(i)
-                break
         self._model_row.connect("notify::selected", self._on_model_changed)
         grp2.add(self._model_row)
+        page.add(grp2)
 
-        # API key (for cloud providers)
+        # API key + endpoint
+        conn_grp = Adw.PreferencesGroup(title="Provider connection")
         self._api_key_row = Adw.EntryRow(title="API Key")
         self._api_key_row.set_text(cfg.get("api_key", ""))
         self._api_key_row.connect("changed", self._on_api_key_changed)
-        grp2.add(self._api_key_row)
-
-        page.add(grp2)
+        conn_grp.add(self._api_key_row)
+        base_url = cfg.get("base_url", self._default_base_url_for_provider(provider, backend))
+        self._provider_url_row = Adw.EntryRow(title="Endpoint URL")
+        self._provider_url_row.set_text(base_url)
+        self._provider_url_row.connect("changed", self._on_provider_url_changed)
+        conn_grp.add(self._provider_url_row)
+        self._test_btn = Gtk.Button(label="Test connection")
+        self._test_btn.set_valign(Gtk.Align.CENTER)
+        self._test_btn.connect("clicked", self._on_test_connection)
+        self._provider_url_row.add_suffix(self._test_btn)
+        page.add(conn_grp)
 
         # Briefing depth (moved from header)
         grp_depth = Adw.PreferencesGroup(
@@ -119,21 +142,18 @@ class SettingsDialog(Adw.PreferencesWindow):
         # Ollama management
         grp3 = Adw.PreferencesGroup(title="Ollama")
         ollama_cfg = Config.ollama_config()
-        base_url = cfg.get("base_url", OLLAMA_DEFAULT_BASE_URL)
-        url_row = Adw.EntryRow(title="Ollama URL")
-        url_row.set_text(base_url)
-        url_row.connect("changed", self._on_ollama_url_changed)
-        grp3.add(url_row)
-        self._ollama_url_row = url_row
-        test_btn = Gtk.Button(label="Test connection")
-        test_btn.set_valign(Gtk.Align.CENTER)
-        test_btn.connect("clicked", self._on_test_ollama)
-        url_row.add_suffix(test_btn)
-        auto_start = Adw.SwitchRow(title="Auto-start Ollama", subtitle="Start Ollama when GeoPulse launches")
+        auto_start = Adw.SwitchRow(
+            title="Auto-start Ollama",
+            subtitle="Start Ollama when GeoPulse launches (for Ollama provider only)",
+        )
         auto_start.set_active(ollama_cfg.get("auto_start", True))
         auto_start.connect("notify::active", lambda row, _: Config.update(ollama={"auto_start": row.get_active()}))
         grp3.add(auto_start)
+        self._ollama_auto_start_row = auto_start
         page.add(grp3)
+
+        self._sync_provider_controls()
+        self._refresh_model_list()
 
     # ── Schedule ──────────────────────────────────────────────────────────────
 
@@ -150,16 +170,16 @@ class SettingsDialog(Adw.PreferencesWindow):
         sentinel_row.set_title("Sentinel check (minutes)")
         sentinel_row.set_subtitle("How often to check major news sources")
         sentinel_row.set_value(schedule.get("sentinel_interval_minutes", 15))
-        sentinel_row.connect("notify::value", lambda r, _: Config.update(
-            schedule={"sentinel_interval_minutes": int(r.get_value())}))
+        sentinel_row.connect("notify::value", lambda r, _: (Config.update(
+            schedule={"sentinel_interval_minutes": int(r.get_value())}), self._emit_schedule_changed()))
         grp.add(sentinel_row)
 
         briefing_row = Adw.SpinRow.new_with_range(15, 360, 15)
         briefing_row.set_title("Briefing interval (minutes)")
         briefing_row.set_subtitle("Generate a scheduled briefing every N minutes")
         briefing_row.set_value(schedule.get("briefing_interval_minutes", 60))
-        briefing_row.connect("notify::value", lambda r, _: Config.update(
-            schedule={"briefing_interval_minutes": int(r.get_value())}))
+        briefing_row.connect("notify::value", lambda r, _: (Config.update(
+            schedule={"briefing_interval_minutes": int(r.get_value())}), self._emit_schedule_changed()))
         grp.add(briefing_row)
 
         page.add(grp)
@@ -212,15 +232,19 @@ class SettingsDialog(Adw.PreferencesWindow):
         sentinel_min.set_title("Sentinel min interval (minutes)")
         sentinel_min.set_subtitle("Max once per this many minutes; e.g. 5")
         sentinel_min.set_value(schedule.get("sentinel_min_interval_minutes", 5))
-        sentinel_min.connect("notify::value", lambda r, _: Config.update(
-            schedule={"sentinel_min_interval_minutes": int(r.get_value())}))
+        sentinel_min.connect("notify::value", lambda r, _: (
+            Config.update(schedule={"sentinel_min_interval_minutes": int(r.get_value())}),
+            self._emit_schedule_changed()
+        ))
         grp_throttle.add(sentinel_min)
         other_min = Adw.SpinRow.new_with_range(5, 120, 5)
         other_min.set_title("Other sources min interval (minutes)")
         other_min.set_subtitle("Tier 2/3 (context, official) at most once per this many minutes; e.g. 20")
         other_min.set_value(schedule.get("other_sources_min_interval_minutes", 20))
-        other_min.connect("notify::value", lambda r, _: Config.update(
-            schedule={"other_sources_min_interval_minutes": int(r.get_value())}))
+        other_min.connect("notify::value", lambda r, _: (
+            Config.update(schedule={"other_sources_min_interval_minutes": int(r.get_value())}),
+            self._emit_schedule_changed()
+        ))
         grp_throttle.add(other_min)
         page.add(grp_throttle)
 
@@ -305,10 +329,12 @@ class SettingsDialog(Adw.PreferencesWindow):
 
     def _on_scheduled_enabled_changed(self, row, _):
         Config.update(scheduled_briefing={**Config.scheduled_briefing(), "enabled": row.get_active()})
+        self._emit_schedule_changed()
 
     def _on_scheduled_depth_changed(self, row, _):
         depth = "extended" if row.get_selected() == 1 else "brief"
         Config.update(scheduled_briefing={**Config.scheduled_briefing(), "depth": depth})
+        self._emit_schedule_changed()
 
     def _on_email_default_to_changed(self, row):
         Config.update(email={**Config.email_config(), "default_to": row.get_text().strip()})
@@ -622,11 +648,121 @@ class SettingsDialog(Adw.PreferencesWindow):
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
+    def _selected_provider(self) -> str:
+        idx = self._provider_row.get_selected()
+        if idx < 0:
+            return "ollama"
+        try:
+            return self._provider_ids[idx]
+        except Exception:
+            return "ollama"
+
+    def _selected_custom_backend(self) -> str:
+        idx = self._custom_backend_row.get_selected()
+        try:
+            return self._custom_backend_ids[idx]
+        except Exception:
+            return "openai"
+
+    def _default_base_url_for_provider(self, provider: str, custom_backend: str = "openai") -> str:
+        if provider == "ollama":
+            return OLLAMA_DEFAULT_BASE_URL
+        if provider == "openai":
+            return OPENAI_DEFAULT_BASE_URL
+        if provider == "anthropic":
+            return ANTHROPIC_DEFAULT_BASE_URL
+        if provider == "llama_cpp":
+            return LLAMA_CPP_DEFAULT_BASE_URL
+        if custom_backend == "anthropic":
+            return ANTHROPIC_DEFAULT_BASE_URL
+        return OPENAI_DEFAULT_BASE_URL
+
+    def _sync_provider_controls(self):
+        provider = self._selected_provider()
+        backend = self._selected_custom_backend()
+        is_custom = provider == "custom"
+        self._custom_backend_row.set_visible(is_custom)
+        if is_custom:
+            self._provider_url_row.set_title("API URL")
+        elif provider == "openai":
+            self._provider_url_row.set_title("OpenAI URL")
+        elif provider == "anthropic":
+            self._provider_url_row.set_title("Anthropic URL")
+        elif provider == "llama_cpp":
+            self._provider_url_row.set_title("llama.cpp URL")
+        else:
+            self._provider_url_row.set_title("Ollama URL")
+
+        expected_url = Config.llm().get("base_url", "")
+        if not expected_url:
+            expected_url = self._default_base_url_for_provider(provider, backend)
+        self._provider_url_row.set_text(expected_url)
+        self._provider_url_row.set_sensitive(True)
+
+        current_api_key = Config.llm().get("api_key", "")
+        if self._api_key_row.get_text() != current_api_key:
+            self._api_key_row.set_text(current_api_key)
+
+        # API key not needed for local providers
+        self._api_key_row.set_visible(provider in {"openai", "anthropic", "custom"})
+        if self._ollama_auto_start_row:
+            self._ollama_auto_start_row.set_visible(provider == "ollama")
+
+        self._refresh_model_list()
+
+    def _provider_config_for_row(self) -> dict:
+        cfg = dict(Config.llm())
+        provider = self._selected_provider()
+        backend = self._selected_custom_backend()
+        cfg["provider"] = provider
+        cfg["custom_backend"] = backend
+        return cfg
+
+    def _apply_model_list(self, names):
+        if not names:
+            names = [Config.llm().get("model", "qwen3:8b")]
+        # de-duplicate while preserving order
+        seen = set()
+        names = [n for n in names if isinstance(n, str) and not (n in seen or seen.add(n))]
+        self._model_names = names
+
+        model_list = Gtk.StringList()
+        for name in names:
+            model_list.append(name)
+        self._model_row.set_model(model_list)
+        configured_model = Config.llm().get("model", "qwen3:8b")
+        if configured_model in names:
+            self._model_row.set_selected(names.index(configured_model))
+        else:
+            Config.update(llm={"model": names[0]})
+            self._model_row.set_selected(0)
+
+    def _refresh_model_list(self):
+        cfg = self._provider_config_for_row()
+
+        def _load():
+            model_names = [cfg.get("model", "qwen3:8b")]
+            try:
+                provider = create_provider(cfg)
+                model_names = provider.list_models()
+            except Exception as exc:
+                logger.debug("Model discovery failed: %s", exc)
+            GLib.idle_add(self._apply_model_list, model_names)
+
+        threading.Thread(target=_load, daemon=True).start()
+
     def _on_provider_changed(self, row, _):
         idx = row.get_selected()
-        providers = ["ollama", "openai", "anthropic"]
+        providers = self._provider_ids
         if idx < len(providers):
             Config.update(llm={"provider": providers[idx]})
+            self._sync_provider_controls()
+
+    def _on_custom_backend_changed(self, row, _):
+        idx = row.get_selected()
+        if idx < len(self._custom_backend_ids):
+            Config.update(llm={"custom_backend": self._custom_backend_ids[idx]})
+            self._sync_provider_controls()
 
     def _on_model_changed(self, row, _):
         idx = row.get_selected()
@@ -635,24 +771,27 @@ class SettingsDialog(Adw.PreferencesWindow):
 
     def _on_api_key_changed(self, row):
         Config.update(llm={"api_key": row.get_text()})
+        self._refresh_model_list()
 
     def _on_depth_changed(self, row, _param):
         depth = "extended" if row.get_selected() == 1 else "brief"
         Config.update(briefing={"depth": depth})
 
-    def _on_ollama_url_changed(self, row):
-        url = (row.get_text() or "").strip() or OLLAMA_DEFAULT_BASE_URL
+    def _on_provider_url_changed(self, row):
+        provider = self._selected_provider()
+        backend = self._selected_custom_backend()
+        url = (row.get_text() or "").strip() or self._default_base_url_for_provider(provider, backend)
         if not url.startswith(("http://", "https://")):
             url = "http://" + url
         Config.update(llm={"base_url": url})
         self._ollama = OllamaManager(base_url=url)
+        self._refresh_model_list()
 
-    def _on_test_ollama(self, btn):
-        url = (getattr(self, "_ollama_url_row", None) and self._ollama_url_row.get_text() or "").strip() or Config.llm().get("base_url", OLLAMA_DEFAULT_BASE_URL)
-        if not url.startswith(("http://", "https://")):
-            url = "http://" + url
-        om = OllamaManager(base_url=url)
-        if om.is_running():
+    def _on_test_connection(self, btn):
+        provider_cfg = self._provider_config_for_row()
+        try:
+            provider = create_provider(provider_cfg)
+            provider.list_models()
             self.add_toast(Adw.Toast(title="Connection successful"))
-        else:
-            self.add_toast(Adw.Toast(title="Cannot reach Ollama at " + url))
+        except Exception as exc:
+            self.add_toast(Adw.Toast(title=f"Connection failed: {exc}"))

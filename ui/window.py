@@ -524,7 +524,11 @@ class GeoPulseWindow(Adw.ApplicationWindow):
 
     def _start_scheduler(self):
         ollama_cfg = Config.ollama_config()
-        if ollama_cfg.get("auto_start") and not self._ollama.is_running():
+        if (
+            Config.llm().get("provider", "ollama") == "ollama"
+            and ollama_cfg.get("auto_start")
+            and not self._ollama.is_running()
+        ):
             self._set_status("Starting Ollama…")
             self._ollama.start()
 
@@ -739,8 +743,10 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._start_scheduler)
 
     def _on_schedule_settings_changed(self):
-        """Called when user changes morning briefing (or other schedule) in Settings. Reschedule morning timer so it fires at the new time."""
+        """Called when schedule-related settings change in Settings."""
         if self._scheduler:
+            self._scheduler.reschedule_sentinel()
+            self._scheduler.reschedule_briefing()
             self._scheduler.reschedule_morning()
 
     # ── DATA LOADING ──────────────────────────────────────────────────────────

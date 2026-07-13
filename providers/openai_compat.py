@@ -1,9 +1,12 @@
 """OpenAI-compatible API provider."""
 import json
+import logging
 import requests
 from typing import Iterator, List, Dict
 from providers import LLMProvider
+from providers.codex import get_codex_cached_models
 
+logger = logging.getLogger(__name__)
 
 class OpenAIProvider(LLMProvider):
     def __init__(self, model: str, api_key: str,
@@ -16,7 +19,38 @@ class OpenAIProvider(LLMProvider):
 
     @property
     def _headers(self):
-        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _extract_models(self, payload: dict) -> List[str]:
+        models = []
+        source = payload.get("data") or payload.get("models") or []
+        if isinstance(source, list):
+            for item in source:
+                if isinstance(item, dict):
+                    model_id = item.get("id") or item.get("name")
+                    if model_id:
+                        models.append(model_id)
+        if not models and isinstance(payload, dict):
+            direct = payload.get("model")
+            if isinstance(direct, str):
+                models.append(direct)
+        return models
+
+    def list_models(self) -> List[str]:
+        try:
+            resp = requests.get(f"{self.base_url}/models", headers=self._headers, timeout=20)
+            if resp.status_code == 401:
+                models = get_codex_cached_models()
+                if models:
+                    return models
+            resp.raise_for_status()
+            return self._extract_models(resp.json() or {})
+        except Exception as exc:
+            logger.debug("OpenAI-compatible list_models failed: %s", exc)
+        return get_codex_cached_models()
 
     def chat(self, messages: List[Dict], stream: bool = False) -> str:
         resp = requests.post(
