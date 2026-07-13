@@ -7,11 +7,12 @@ from providers import LLMProvider
 
 class AnthropicProvider(LLMProvider):
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = "",
+                 base_url: str = "https://api.anthropic.com/v1",
                  temperature: float = 0.3):
         self.model = model
         self.api_key = api_key
         self.temperature = temperature
-        self.base_url = "https://api.anthropic.com/v1"
+        self.base_url = base_url.rstrip("/")
 
     @property
     def _headers(self):
@@ -73,3 +74,6 @@ class AnthropicProvider(LLMProvider):
                         yield data.get("delta", {}).get("text", "")
                 except (json.JSONDecodeError, KeyError):
                     continue
+
+    def list_models(self) -> List[str]:
+        return []

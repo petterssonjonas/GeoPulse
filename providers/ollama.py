@@ -48,3 +48,11 @@ class OllamaProvider(LLMProvider):
                         yield data.get("message", {}).get("content", "")
                 except json.JSONDecodeError:
                     continue
+
+    def list_models(self) -> List[str]:
+        try:
+            resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            resp.raise_for_status()
+            return [m["name"] for m in resp.json().get("models", [])]
+        except Exception:
+            return []

@@ -1,5 +1,6 @@
 """RSS/Atom feed parsing, HTML scraping, and on-demand search."""
 import logging
+import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin, quote
 
@@ -26,6 +27,7 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 REQUEST_TIMEOUT = 20
+FETCHER_DELAY_SECONDS = 0.4
 
 
 def _now_iso() -> str:
@@ -210,21 +212,27 @@ def fetch_source(source: dict) -> list:
 
 def fetch_sources_by_tier(tier: int) -> list:
     all_articles = []
-    for source in load_sources(tier=tier):
+    sources = load_sources(tier=tier)
+    for idx, source in enumerate(sources):
         try:
             articles = fetch_source(source)
             logger.info(f"  [{source['name']}] {len(articles)} articles")
             all_articles.extend(articles)
         except Exception as e:
             logger.error(f"  [{source['name']}] error: {e}")
+        if idx + 1 < len(sources) and FETCHER_DELAY_SECONDS > 0:
+            time.sleep(FETCHER_DELAY_SECONDS)
     return _dedupe_articles_by_url(all_articles)
 
 
 def fetch_all_sources() -> list:
     all_articles = []
-    for source in load_sources():
+    sources = load_sources()
+    for idx, source in enumerate(sources):
         try:
             all_articles.extend(fetch_source(source))
         except Exception as e:
             logger.error(f"  [{source['name']}] error: {e}")
+        if idx + 1 < len(sources) and FETCHER_DELAY_SECONDS > 0:
+            time.sleep(FETCHER_DELAY_SECONDS)
     return _dedupe_articles_by_url(all_articles)

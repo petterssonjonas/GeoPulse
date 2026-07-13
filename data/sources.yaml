@@ -5,7 +5,7 @@
 sources:
   # ── TIER 1: SENTINEL ──
   - name: Reuters World
-    url: https://feeds.reuters.com/reuters/worldNews
+    url: https://news.google.com/rss/search?q=site%3Areuters.com+world+news&hl=en-US&gl=US&ceid=US%3Aen
     type: rss
     tier: 1
     category: media
@@ -29,7 +29,7 @@ sources:
     enabled: true
 
   - name: AP News World
-    url: https://apnews.com/rss/apf-intlnews
+    url: https://news.google.com/rss/search?q=site%3Aapnews.com+world&hl=en-US&gl=US&ceid=US%3Aen
     type: rss
     tier: 1
     category: media
@@ -103,7 +103,7 @@ sources:
     enabled: true
 
   - name: US State Department
-    url: https://www.state.gov/press-releases/feed/
+    url: https://news.google.com/rss/search?q=site%3Astate.gov+press+releases&hl=en-US&gl=US&ceid=US%3Aen
     type: rss
     tier: 3
     category: official
@@ -143,12 +143,9 @@ sources:
     enabled: true
 
   - name: Chinese MFA Press
-    url: https://www.mfa.gov.cn/eng/
-    type: scrape
+    url: https://news.google.com/rss/search?q=site%3Amfa.gov.cn+Chinese+Ministry+of+Foreign+Affairs&hl=en-US&gl=US&ceid=US%3Aen
+    type: rss
     tier: 3
     category: official
     region: china
     enabled: true
-    scrape_config:
-      article_selector: ".list-news li a, .list_wz li a"
-      base_url: "https://www.mfa.gov.cn"

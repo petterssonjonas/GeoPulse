@@ -19,7 +19,7 @@ Feedback and contributions are welcome.
 
 ## What it does
 
-A tiered background process ingests curated news sources (RSS and web). It scores severity, runs a novelty check to avoid duplicate briefings, and generates analytically structured briefings using a local LLM (Ollama) or an optional cloud API (OpenAI, Anthropic). The native GNOME desktop app shows severity-ranked briefings and inline Q&A with your model. No accounts, no telemetry—everything can run on your machine.
+A tiered background process ingests curated news sources (RSS and web). It scores severity, runs a novelty check to avoid duplicate briefings, and generates analytically structured briefings using local or API-based inference (Ollama, llama.cpp, OpenAI-compatible, Anthropic, or custom providers). The native GNOME desktop app shows severity-ranked briefings and inline Q&A with your chosen model. No accounts, no telemetry—everything can run on your machine.
 
 ---
 
@@ -37,7 +37,7 @@ A tiered background process ingests curated news sources (RSS and web). It score
 
 - 🔴 **Severity-ranked briefings** — auto-classified from routine to breaking
 - 📰 **Curated sources** — Reuters, BBC, Al Jazeera, AP, Foreign Policy, CFR, War on the Rocks, Bellingcat, and more (tiered: sentinel → context → official)
-- 🧠 **Local or cloud LLM** — Ollama (Qwen3, Mistral, Llama, etc.) or OpenAI / Anthropic API
+- 🧠 **Local or cloud LLM** — Ollama, llama.cpp, OpenAI-compatible APIs, Anthropic, and custom providers
 - 💬 **Inline Q&A** — follow-up questions against the briefing context, streamed in real time
 - 🌅 **Morning briefing** — optional daily digest at a time you choose (overnight news)
 - ⏱ **Scheduled briefings** — interval-based generation; both morning and scheduled can use brief or extended depth
@@ -136,7 +136,7 @@ python main.py
 
 Config is created on first run at `~/.config/geopulse/config.yaml`. Key sections:
 
-- **llm** — `provider` (ollama / openai / anthropic), `model`, `base_url`, `api_key`
+- **llm** — `provider` (ollama / openai / anthropic / llama_cpp / custom), `custom_backend` (for custom provider: openai or anthropic), `model`, `base_url`, `api_key`
 - **schedule** — `sentinel_interval_minutes`, `briefing_interval_minutes`, throttle and retention
 - **morning_briefing** — `enabled`, `time` (e.g. `"07:00"`), `depth` (brief / extended)
 - **scheduled_briefing** — `enabled`, `depth`
@@ -164,7 +164,8 @@ Sources and tiers are defined in **`data/sources.yaml`** (edit and restart). Top
 │  └──────────────────────────┬──────────────────────────────────┘│
 │                              │                                    │
 │  ┌──────────────────────────▼──────────────────────────────────┐│
-│  │  LLM: Ollama (local) or OpenAI / Anthropic API               ││
+│  │  LLM: Ollama / llama.cpp / OpenAI-compatible / Anthropic /      ││
+│  │       Custom provider backends                                  ││
 │  │  Briefing generation, novelty check, Q&A streaming           ││
 │  └──────────────────────────┬──────────────────────────────────┘│
 │                              │ libnotify                          │

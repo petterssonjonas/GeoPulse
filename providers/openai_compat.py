@@ -1,28 +1,104 @@
 """OpenAI-compatible API provider."""
 import json
+import logging
 import requests
-from typing import Iterator, List, Dict
+from typing import Dict, Iterator, List, Optional
 from providers import LLMProvider
+from providers.codex import get_codex_cached_models
 
+logger = logging.getLogger(__name__)
 
 class OpenAIProvider(LLMProvider):
     def __init__(self, model: str, api_key: str,
                  base_url: str = "https://api.openai.com/v1",
-                 temperature: float = 0.3):
+                 variant: Optional[str] = None,
+                 reasoning_effort: Optional[str] = None,
+                 temperature: float = 0.3,
+                 fallback_to_codex_cache: bool = True):
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.temperature = temperature
+        self.variant = variant.strip() if isinstance(variant, str) else None
+        self.reasoning_effort = reasoning_effort.strip() if isinstance(reasoning_effort, str) else None
+        self.fallback_to_codex_cache = fallback_to_codex_cache
+
+    def _chat_payload(self, messages: List[Dict], stream: bool = False) -> dict:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+        if stream:
+            payload["stream"] = True
+        if self.variant:
+            payload["variant"] = self.variant
+        if self.reasoning_effort:
+            payload["reasoningEffort"] = self.reasoning_effort
+        return payload
 
     @property
     def _headers(self):
-        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _extract_models(self, payload: dict) -> List[str]:
+        models = []
+        if isinstance(payload, list):
+            source = payload
+        else:
+            source = payload.get("data") or payload.get("models") or []
+        if isinstance(source, list):
+            for item in source:
+                if isinstance(item, dict):
+                    model_id = item.get("id") or item.get("name")
+                    if model_id:
+                        models.append(model_id)
+                elif isinstance(item, str):
+                    models.append(item)
+        if not models and isinstance(payload, dict):
+            direct = payload.get("model")
+            if isinstance(direct, str):
+                models.append(direct)
+        return models
+
+    def _model_list_endpoints(self):
+        base = self.base_url.rstrip("/")
+        yield f"{base}/models"
+        if not base.endswith("/v1"):
+            yield f"{base}/v1/models"
+
+    def list_models(self) -> List[str]:
+        last_error = None
+        for endpoint in self._model_list_endpoints():
+            try:
+                resp = requests.get(endpoint, headers=self._headers, timeout=20)
+                if self.fallback_to_codex_cache and resp.status_code == 401:
+                    models = get_codex_cached_models()
+                    if models:
+                        return models
+                resp.raise_for_status()
+                models = self._extract_models(resp.json() or {})
+                if models:
+                    return models
+                if resp.status_code == 404:
+                    continue
+            except Exception as exc:
+                last_error = exc
+                logger.debug("OpenAI-compatible list_models failed using %s: %s", endpoint, exc)
+                continue
+        if self.fallback_to_codex_cache:
+            logger.debug("OpenAI-compatible list_models fallback to Codex cache due: %s", last_error)
+            return get_codex_cached_models()
+        return []
 
     def chat(self, messages: List[Dict], stream: bool = False) -> str:
         resp = requests.post(
             f"{self.base_url}/chat/completions",
             headers=self._headers,
-            json={"model": self.model, "messages": messages, "temperature": self.temperature},
+            json=self._chat_payload(messages),
             timeout=120,
         )
         resp.raise_for_status()
@@ -34,7 +110,7 @@ class OpenAIProvider(LLMProvider):
         resp = requests.post(
             f"{self.base_url}/chat/completions",
             headers=self._headers,
-            json={"model": self.model, "messages": messages, "temperature": self.temperature, "stream": True},
+            json=self._chat_payload(messages, stream=True),
             stream=True,
             timeout=120,
         )

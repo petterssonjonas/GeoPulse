@@ -1,4 +1,4 @@
-"""First-run setup wizard: Ollama check, model selection, topic picking."""
+"""First-run setup wizard: provider check, model selection, topic picking."""
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
@@ -35,7 +35,7 @@ class WelcomeView(Gtk.Box):
         page.set_icon_name("find-location-symbolic")
         page.set_title("Welcome to GeoPulse")
         page.set_description("Your local geopolitical intelligence assistant.\n"
-                             "AI-powered news monitoring that runs entirely on your machine.")
+                             "AI-powered news monitoring that works with local and API providers.")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_halign(Gtk.Align.CENTER)
@@ -66,15 +66,15 @@ class WelcomeView(Gtk.Box):
         page = Adw.StatusPage()
         page.set_icon_name("system-run-symbolic")
         page.set_title("AI Engine Setup")
-        page.set_description("GeoPulse uses Ollama to run AI models locally.")
+        page.set_description("GeoPulse can use local or API models. You can switch providers later in Settings.")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         box.set_halign(Gtk.Align.CENTER)
         box.set_size_request(400, -1)
 
-        # Ollama status
-        grp = Adw.PreferencesGroup(title="Ollama Status")
-        self._ollama_status_row = Adw.ActionRow(title="Ollama", subtitle="Checking…")
+        # Provider status
+        grp = Adw.PreferencesGroup(title="Provider status")
+        self._ollama_status_row = Adw.ActionRow(title="Provider", subtitle="Checking…")
         self._ollama_start_btn = Gtk.Button(label="Start")
         self._ollama_start_btn.set_valign(Gtk.Align.CENTER)
         self._ollama_start_btn.connect("clicked", self._on_start_ollama)
@@ -194,7 +194,7 @@ class WelcomeView(Gtk.Box):
         installed = self._ollama.is_installed()
         def _update():
             if running:
-                self._ollama_status_row.set_subtitle("● Running")
+                self._ollama_status_row.set_subtitle("● Running (local provider detected)")
                 self._ollama_start_btn.set_sensitive(False)
                 self._ollama_start_btn.set_label("Running")
                 self._check_models()

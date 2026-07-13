@@ -405,6 +405,21 @@ class SmartScheduler:
         self._sentinel_timer.daemon = True
         self._sentinel_timer.start()
 
+    def reschedule_sentinel(self):
+        """Re-read schedule config and reschedule the sentinel timer. Call when user changes cadence/throttle in Settings."""
+        if self._sentinel_timer:
+            self._sentinel_timer.cancel()
+            self._sentinel_timer = None
+        if not self._running:
+            return
+        delay = self._seconds_until_tier_allowed(1)
+        if delay is not None and delay > 0:
+            self._sentinel_timer = threading.Timer(max(1, int(delay)), self._tick_sentinel)
+            self._sentinel_timer.daemon = True
+            self._sentinel_timer.start()
+        else:
+            threading.Thread(target=self._sentinel_cycle, daemon=True).start()
+
     def _tick_sentinel(self):
         self._sentinel_cycle()
 
@@ -418,6 +433,17 @@ class SmartScheduler:
         self._briefing_timer = threading.Timer(interval, self._tick_briefing)
         self._briefing_timer.daemon = True
         self._briefing_timer.start()
+
+    def reschedule_briefing(self):
+        """Re-read scheduled briefing config and reschedule the recurring timer. Call when interval/settings change."""
+        if self._briefing_timer:
+            self._briefing_timer.cancel()
+            self._briefing_timer = None
+        if not self._running:
+            return
+        if not Config.scheduled_briefing().get("enabled", True):
+            return
+        self._schedule_briefing()
 
     def _tick_briefing(self):
         if self._running and Config.scheduled_briefing().get("enabled", True):
