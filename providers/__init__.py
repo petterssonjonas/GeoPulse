@@ -18,6 +18,7 @@ PROVIDER_OPTIONS = [
     ("openai", "OpenAI-compatible"),
     ("anthropic", "Anthropic"),
     ("llama_cpp", "llama.cpp"),
+    ("codex", "Codex"),
     ("custom", "Custom provider"),
 ]
 
@@ -28,7 +29,12 @@ CUSTOM_BACKENDS = [
 
 
 def get_provider_options() -> List[str]:
-    return [name for name, _ in PROVIDER_OPTIONS]
+    from providers.codex import is_codex_available
+
+    providers = [name for name, _ in PROVIDER_OPTIONS]
+    if "codex" in providers and not is_codex_available():
+        providers.remove("codex")
+    return providers
 
 
 def get_provider_label(provider_id: str) -> str:
@@ -56,6 +62,16 @@ def _resolve_openai_api_key(config: dict) -> str:
         return ""
 
 
+def _resolve_optional_provider_field(config: dict, *keys: str) -> str:
+    for key in keys:
+        value = config.get(key, "")
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                return value
+    return ""
+
+
 def create_provider(config: Optional[dict] = None) -> LLMProvider:
     if config is None:
         from storage.config import Config
@@ -73,6 +89,8 @@ def create_provider(config: Optional[dict] = None) -> LLMProvider:
     api_key = _resolve_openai_api_key(config)
     base_url = config.get("base_url", OLLAMA_DEFAULT_BASE_URL) or OLLAMA_DEFAULT_BASE_URL
     temperature = config.get("temperature", 0.3)
+    variant = _resolve_optional_provider_field(config, "variant", "model_variant")
+    reasoning_effort = _resolve_optional_provider_field(config, "reasoningEffort", "reasoning_effort")
 
     if provider == "ollama":
         from providers.ollama import OllamaProvider
@@ -84,6 +102,8 @@ def create_provider(config: Optional[dict] = None) -> LLMProvider:
             model=model,
             api_key=api_key,
             base_url=config.get("base_url", OPENAI_DEFAULT_BASE_URL),
+            variant=variant,
+            reasoning_effort=reasoning_effort,
             temperature=temperature,
         )
 
@@ -102,6 +122,25 @@ def create_provider(config: Optional[dict] = None) -> LLMProvider:
             model=model,
             api_key=api_key,
             base_url=config.get("base_url", LLAMA_CPP_DEFAULT_BASE_URL),
+            variant=variant,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+        )
+
+    if provider == "codex":
+        if not reasoning_effort:
+            from providers.codex import get_codex_model_reasoning_level
+
+            default_reasoning = get_codex_model_reasoning_level(model)
+            if default_reasoning:
+                reasoning_effort = default_reasoning
+        from providers.openai_compat import OpenAIProvider
+        return OpenAIProvider(
+            model=model,
+            api_key=api_key,
+            base_url=config.get("base_url", OPENAI_DEFAULT_BASE_URL),
+            variant=variant,
+            reasoning_effort=reasoning_effort,
             temperature=temperature,
         )
 
@@ -112,6 +151,8 @@ def create_provider(config: Optional[dict] = None) -> LLMProvider:
             api_key=api_key,
             base_url=config.get("base_url", OPENAI_DEFAULT_BASE_URL),
             backend=resolve_custom_backend(config),
+            variant=variant,
+            reasoning_effort=reasoning_effort,
             temperature=temperature,
         )
 

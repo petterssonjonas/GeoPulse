@@ -41,6 +41,7 @@ class SettingsDialog(Adw.PreferencesWindow):
 
     def _build(self):
         self._build_ai_page()
+        self._build_api_page()
         self._build_schedule_page()
         self._build_retention_page()
         self._build_appearance_page()
@@ -55,7 +56,6 @@ class SettingsDialog(Adw.PreferencesWindow):
 
         cfg = Config.llm()
         provider = cfg.get("provider", "ollama")
-        backend = cfg.get("custom_backend", "openai")
 
         provider_ids = get_provider_options()
         provider_labels = {
@@ -63,10 +63,14 @@ class SettingsDialog(Adw.PreferencesWindow):
             "openai": "OpenAI-compatible",
             "anthropic": "Anthropic",
             "llama_cpp": "llama.cpp",
+            "codex": "Codex",
             "custom": "Custom provider",
         }
-        backend_ids = [b for b, _ in CUSTOM_BACKENDS]
-        backend_labels = [l for _, l in CUSTOM_BACKENDS]
+        if provider not in provider_ids and provider_ids:
+            provider = provider_ids[0]
+            Config.update(llm={"provider": provider})
+        self._provider_ids = provider_ids
+        current = provider
 
         # Provider
         grp = Adw.PreferencesGroup(title="Provider")
@@ -75,7 +79,6 @@ class SettingsDialog(Adw.PreferencesWindow):
         for p in provider_ids:
             providers.append(provider_labels.get(p, p))
         provider_row.set_model(providers)
-        current = cfg.get("provider", "ollama")
         for i, p in enumerate(provider_ids):
             if p == current:
                 provider_row.set_selected(i)
@@ -83,6 +86,28 @@ class SettingsDialog(Adw.PreferencesWindow):
         grp.add(provider_row)
         self._provider_row = provider_row
         page.add(grp)
+
+        # Default model
+        grp2 = Adw.PreferencesGroup(
+            title="Default Model",
+            description="Select the model for analysis and follow-up prompts.",
+        )
+        self._model_row = Adw.ComboRow(title="Default Analysis Model")
+        self._model_row.connect("notify::selected", self._on_model_changed)
+        grp2.add(self._model_row)
+        page.add(grp2)
+
+    def _build_api_page(self):
+        page = Adw.PreferencesPage(title="API", icon_name="network-transmit-signal-symbolic")
+        self.add(page)
+
+        cfg = Config.llm()
+        backend = cfg.get("custom_backend", "openai")
+        provider = cfg.get("provider", "ollama")
+
+        backend_ids = [b for b, _ in CUSTOM_BACKENDS]
+        backend_labels = [l for _, l in CUSTOM_BACKENDS]
+        self._custom_backend_ids = backend_ids
 
         # Custom backend
         backend_grp = Adw.PreferencesGroup(title="Custom provider")
@@ -99,16 +124,6 @@ class SettingsDialog(Adw.PreferencesWindow):
         backend_grp.add(backend_row)
         page.add(backend_grp)
 
-        # Default model
-        grp2 = Adw.PreferencesGroup(
-            title="Default Model",
-            description="Select the model for analysis and follow-up prompts.",
-        )
-        self._model_row = Adw.ComboRow(title="Default Analysis Model")
-        self._model_row.connect("notify::selected", self._on_model_changed)
-        grp2.add(self._model_row)
-        page.add(grp2)
-
         # API key + endpoint
         conn_grp = Adw.PreferencesGroup(title="Provider connection")
         self._api_key_row = Adw.EntryRow(title="API Key")
@@ -120,13 +135,20 @@ class SettingsDialog(Adw.PreferencesWindow):
         self._provider_url_row.set_text(base_url)
         self._provider_url_row.connect("changed", self._on_provider_url_changed)
         conn_grp.add(self._provider_url_row)
+        self._variant_row = Adw.EntryRow(title="Variant")
+        self._variant_row.set_text(cfg.get("variant", cfg.get("model_variant", "")))
+        self._variant_row.connect("changed", self._on_variant_changed)
+        conn_grp.add(self._variant_row)
+        self._reasoning_effort_row = Adw.EntryRow(title="Reasoning effort")
+        self._reasoning_effort_row.set_text(cfg.get("reasoningEffort", cfg.get("reasoning_effort", "")))
+        self._reasoning_effort_row.connect("changed", self._on_reasoning_effort_changed)
+        conn_grp.add(self._reasoning_effort_row)
         self._test_btn = Gtk.Button(label="Test connection")
         self._test_btn.set_valign(Gtk.Align.CENTER)
         self._test_btn.connect("clicked", self._on_test_connection)
         self._provider_url_row.add_suffix(self._test_btn)
         page.add(conn_grp)
-
-        # Briefing depth (moved from header)
+        # Briefing depth
         grp_depth = Adw.PreferencesGroup(
             title="Briefing depth",
             description="Default depth for new briefings. Use \"Go deeper\" in a briefing to regenerate with extended depth.",
@@ -673,6 +695,8 @@ class SettingsDialog(Adw.PreferencesWindow):
             return ANTHROPIC_DEFAULT_BASE_URL
         if provider == "llama_cpp":
             return LLAMA_CPP_DEFAULT_BASE_URL
+        if provider == "codex":
+            return OPENAI_DEFAULT_BASE_URL
         if custom_backend == "anthropic":
             return ANTHROPIC_DEFAULT_BASE_URL
         return OPENAI_DEFAULT_BASE_URL
@@ -681,6 +705,7 @@ class SettingsDialog(Adw.PreferencesWindow):
         provider = self._selected_provider()
         backend = self._selected_custom_backend()
         is_custom = provider == "custom"
+        uses_openai_options = provider in {"openai", "llama_cpp", "codex"} or (provider == "custom" and backend == "openai")
         self._custom_backend_row.set_visible(is_custom)
         if is_custom:
             self._provider_url_row.set_title("API URL")
@@ -690,6 +715,8 @@ class SettingsDialog(Adw.PreferencesWindow):
             self._provider_url_row.set_title("Anthropic URL")
         elif provider == "llama_cpp":
             self._provider_url_row.set_title("llama.cpp URL")
+        elif provider == "codex":
+            self._provider_url_row.set_title("Codex URL")
         else:
             self._provider_url_row.set_title("Ollama URL")
 
@@ -704,7 +731,19 @@ class SettingsDialog(Adw.PreferencesWindow):
             self._api_key_row.set_text(current_api_key)
 
         # API key not needed for local providers
-        self._api_key_row.set_visible(provider in {"openai", "anthropic", "custom"})
+        self._api_key_row.set_visible(provider in {"openai", "anthropic", "llama_cpp", "custom"})
+        if provider == "codex":
+            self._api_key_row.set_visible(False)
+        self._variant_row.set_visible(uses_openai_options)
+        self._reasoning_effort_row.set_visible(uses_openai_options)
+        if uses_openai_options:
+            cfg = Config.llm()
+            variant = cfg.get("variant", cfg.get("model_variant", ""))
+            if self._variant_row.get_text() != variant:
+                self._variant_row.set_text(variant)
+            reasoning_effort = cfg.get("reasoningEffort", cfg.get("reasoning_effort", ""))
+            if self._reasoning_effort_row.get_text() != reasoning_effort:
+                self._reasoning_effort_row.set_text(reasoning_effort)
         if self._ollama_auto_start_row:
             self._ollama_auto_start_row.set_visible(provider == "ollama")
 
@@ -716,6 +755,8 @@ class SettingsDialog(Adw.PreferencesWindow):
         backend = self._selected_custom_backend()
         cfg["provider"] = provider
         cfg["custom_backend"] = backend
+        cfg["variant"] = self._variant_row.get_text().strip()
+        cfg["reasoningEffort"] = self._reasoning_effort_row.get_text().strip()
         return cfg
 
     def _apply_model_list(self, names):
@@ -743,6 +784,14 @@ class SettingsDialog(Adw.PreferencesWindow):
         def _load():
             model_names = [cfg.get("model", "qwen3:8b")]
             try:
+                if cfg.get("provider") == "codex":
+                    from providers.codex import get_codex_cached_models
+
+                    cached = get_codex_cached_models()
+                    if cached:
+                        model_names = cached
+                        GLib.idle_add(self._apply_model_list, model_names)
+                        return
                 provider = create_provider(cfg)
                 model_names = provider.list_models()
             except Exception as exc:
@@ -772,6 +821,13 @@ class SettingsDialog(Adw.PreferencesWindow):
     def _on_api_key_changed(self, row):
         Config.update(llm={"api_key": row.get_text()})
         self._refresh_model_list()
+
+    def _on_variant_changed(self, row):
+        Config.update(llm={"variant": row.get_text().strip(), "model_variant": row.get_text().strip()})
+        self._refresh_model_list()
+
+    def _on_reasoning_effort_changed(self, row):
+        Config.update(llm={"reasoningEffort": row.get_text().strip(), "reasoning_effort": row.get_text().strip()})
 
     def _on_depth_changed(self, row, _param):
         depth = "extended" if row.get_selected() == 1 else "brief"

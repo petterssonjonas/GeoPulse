@@ -2,7 +2,7 @@
 import json
 import logging
 import requests
-from typing import Iterator, List, Dict
+from typing import Dict, Iterator, List, Optional
 from providers import LLMProvider
 from providers.codex import get_codex_cached_models
 
@@ -11,11 +11,29 @@ logger = logging.getLogger(__name__)
 class OpenAIProvider(LLMProvider):
     def __init__(self, model: str, api_key: str,
                  base_url: str = "https://api.openai.com/v1",
+                 variant: Optional[str] = None,
+                 reasoning_effort: Optional[str] = None,
                  temperature: float = 0.3):
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.temperature = temperature
+        self.variant = variant.strip() if isinstance(variant, str) else None
+        self.reasoning_effort = reasoning_effort.strip() if isinstance(reasoning_effort, str) else None
+
+    def _chat_payload(self, messages: List[Dict], stream: bool = False) -> dict:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+        if stream:
+            payload["stream"] = True
+        if self.variant:
+            payload["variant"] = self.variant
+        if self.reasoning_effort:
+            payload["reasoningEffort"] = self.reasoning_effort
+        return payload
 
     @property
     def _headers(self):
@@ -56,7 +74,7 @@ class OpenAIProvider(LLMProvider):
         resp = requests.post(
             f"{self.base_url}/chat/completions",
             headers=self._headers,
-            json={"model": self.model, "messages": messages, "temperature": self.temperature},
+            json=self._chat_payload(messages),
             timeout=120,
         )
         resp.raise_for_status()
@@ -68,7 +86,7 @@ class OpenAIProvider(LLMProvider):
         resp = requests.post(
             f"{self.base_url}/chat/completions",
             headers=self._headers,
-            json={"model": self.model, "messages": messages, "temperature": self.temperature, "stream": True},
+            json=self._chat_payload(messages, stream=True),
             stream=True,
             timeout=120,
         )

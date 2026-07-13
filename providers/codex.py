@@ -1,6 +1,7 @@
 """Codex auth helpers used for model discovery and token-based OpenAI-compatible calls."""
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
@@ -23,6 +24,16 @@ def get_codex_access_token(auth_path: Path = CODEX_AUTH_PATH) -> str:
     except Exception as exc:
         logger.debug("Failed reading Codex auth.json: %s", exc)
     return ""
+
+
+def is_codex_cli_available(binary_name: str = "codex") -> bool:
+    """Return True when the Codex CLI executable is available."""
+    return bool(shutil.which(binary_name))
+
+
+def is_codex_available(auth_path: Path = CODEX_AUTH_PATH) -> bool:
+    """Return True when Codex CLI and a stored auth token are both present."""
+    return bool(is_codex_cli_available() and get_codex_access_token(auth_path))
 
 
 def get_codex_cached_models(cache_path: Optional[Path] = None) -> List[str]:
@@ -49,3 +60,29 @@ def get_codex_cached_models(cache_path: Optional[Path] = None) -> List[str]:
     except Exception as exc:
         logger.debug("Failed reading Codex models_cache.json: %s", exc)
     return []
+
+
+def get_codex_model_reasoning_level(model_slug: str, cache_path: Optional[Path] = None) -> str:
+    """Return default reasoning level for a Codex model slug."""
+    model_slug = (model_slug or "").strip()
+    if not model_slug:
+        return ""
+
+    cache_file = cache_path or CODEX_MODELS_CACHE
+    try:
+        with open(cache_file, encoding="utf-8") as f:
+            data = json.load(f)
+        for model in data.get("models", []) if isinstance(data, dict) else []:
+            if not isinstance(model, dict):
+                continue
+            slug = model.get("slug")
+            if slug != model_slug:
+                continue
+            level = model.get("default_reasoning_level")
+            if isinstance(level, str) and level:
+                return level
+    except FileNotFoundError:
+        return ""
+    except Exception as exc:
+        logger.debug("Failed reading Codex model reason level: %s", exc)
+    return ""

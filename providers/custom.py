@@ -1,4 +1,6 @@
 """Custom provider that wraps OpenAI-compatible or Anthropic backends."""
+from typing import Optional
+
 from providers import LLMProvider, CUSTOM_BACKENDS
 from providers.anthropic import AnthropicProvider
 from providers.openai_compat import OpenAIProvider
@@ -11,6 +13,8 @@ class CustomProvider(LLMProvider):
         api_key: str,
         base_url: str,
         backend: str,
+        variant: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
         temperature: float = 0.3,
     ):
         if backend not in {b for b, _ in CUSTOM_BACKENDS}:
@@ -23,6 +27,8 @@ class CustomProvider(LLMProvider):
                 model=model,
                 api_key=api_key,
                 base_url=base_url,
+                variant=variant,
+                reasoning_effort=reasoning_effort,
                 temperature=temperature,
             )
         else:
