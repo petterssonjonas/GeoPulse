@@ -32,13 +32,37 @@ class ProviderFactoryTests(unittest.TestCase):
         )
         self.assertIsInstance(create_provider({"provider": "codex", "api_key": "x"}), OpenAIProvider)
 
-    def test_get_provider_options_hides_codex_when_not_available(self):
-        with patch("providers.codex.is_codex_available", return_value=False):
-            self.assertNotIn("codex", get_provider_options())
+    def test_create_provider_custom_api_maps_to_custom_provider(self):
+        provider = create_provider(
+            {
+                "provider": "custom_api",
+                "custom_backend": "anthropic",
+                "custom_base_url": "https://api.anthropic.com/v1",
+                "custom_api_key": "x",
+                "model": "claude-3-opus-20240229",
+            }
+        )
+        self.assertIsInstance(provider, CustomProvider)
+        self.assertEqual(provider.backend, "anthropic")
 
-    def test_get_provider_options_includes_codex_when_available(self):
-        with patch("providers.codex.is_codex_available", return_value=True):
-            self.assertIn("codex", get_provider_options())
+    def test_create_provider_custom_api_does_not_reuse_legacy_api_key(self):
+        provider = create_provider(
+            {
+                "provider": "custom_api",
+                "custom_base_url": "http://localhost:11434/v1",
+                "custom_api_key": "",
+                "api_key": "legacy-key",
+            }
+        )
+        self.assertIsInstance(provider, CustomProvider)
+        self.assertEqual(provider._provider.api_key, "")
+
+    def test_get_provider_options(self):
+        providers = get_provider_options()
+        self.assertIn("local", providers)
+        self.assertIn("custom_api", providers)
+        self.assertNotIn("ollama", providers)
+        self.assertNotIn("custom", providers)
 
     def test_create_provider_uses_codex_default_reasoning_level(self):
         with patch("providers.codex.get_codex_model_reasoning_level", return_value="xhigh"):
@@ -98,6 +122,34 @@ class OpenAIProviderModelTests(unittest.TestCase):
             provider = OpenAIProvider(model="gpt-4", api_key="k", base_url="https://example.test")
             self.assertEqual(provider.list_models(), ["gpt-5", "gpt-4"])
 
+    def test_list_models_extracts_model_field_list(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"models": ["alpha", "beta"]}
+        with patch("providers.openai_compat.requests.get", return_value=resp):
+            provider = OpenAIProvider(model="gpt-4", api_key="k", base_url="https://example.test")
+            self.assertEqual(provider.list_models(), ["alpha", "beta"])
+
+    def test_list_models_tries_v1_prefix_if_plain_models_fails(self):
+        base = "http://localhost:8080"
+        bad = MagicMock()
+        bad.status_code = 404
+        bad.raise_for_status.side_effect = RuntimeError("404")
+        good = MagicMock()
+        good.status_code = 200
+        good.raise_for_status.return_value = None
+        good.json.return_value = {"data": [{"id": "model-a"}]}
+
+        with patch("providers.openai_compat.requests.get", side_effect=[bad, good]) as get:
+            provider = OpenAIProvider(model="m", api_key="k", base_url=base, fallback_to_codex_cache=False)
+            models = provider.list_models()
+
+        self.assertEqual(models, ["model-a"])
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_args_list[0].args[0], f"{base}/models")
+        self.assertEqual(get.call_args_list[1].args[0], f"{base}/v1/models")
+
     def test_chat_payload_includes_variant_and_reasoning_effort(self):
         post_resp = MagicMock()
         post_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
@@ -120,6 +172,12 @@ class OpenAIProviderModelTests(unittest.TestCase):
             patch("providers.openai_compat.get_codex_cached_models", return_value=["codex-1", "codex-2"]):
             provider = OpenAIProvider(model="gpt-4", api_key="", base_url="https://example.test")
             self.assertEqual(provider.list_models(), ["codex-1", "codex-2"])
+
+    def test_list_models_without_fallback_returns_empty_on_failure(self):
+        with patch("providers.openai_compat.requests.get", side_effect=RuntimeError("offline")), \
+            patch("providers.openai_compat.get_codex_cached_models", return_value=["codex-1", "codex-2"]):
+            provider = OpenAIProvider(model="gpt-4", api_key="", base_url="https://example.test", fallback_to_codex_cache=False)
+            self.assertEqual(provider.list_models(), [])
 
 
 class CustomProviderTests(unittest.TestCase):

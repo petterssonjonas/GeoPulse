@@ -12,12 +12,12 @@ from storage.config import (
     OPENAI_DEFAULT_BASE_URL,
     ANTHROPIC_DEFAULT_BASE_URL,
     LLAMA_CPP_DEFAULT_BASE_URL,
+    LM_STUDIO_DEFAULT_BASE_URL,
     BRIEFING_FONT_SIZE_MIN,
     BRIEFING_FONT_SIZE_MAX,
     BRIEFING_FONT_SIZE_DEFAULT,
 )
 from providers import create_provider, get_provider_options, CUSTOM_BACKENDS
-from providers.codex import get_codex_model_reasoning_levels
 from ollama_manager import OllamaManager
 import storage.database as db
 from analysis.briefing import PROMPTS_META, get_prompt, get_default_prompt
@@ -38,11 +38,14 @@ class SettingsDialog(Adw.PreferencesWindow):
         self.set_default_size(500, 600)
         self._on_appearance_changed_cb = on_appearance_changed
         self._on_schedule_changed_cb = on_schedule_changed
-        self._ollama = OllamaManager(base_url=Config.llm().get("base_url", OLLAMA_DEFAULT_BASE_URL))
+        cfg = Config.llm()
+        self._ollama = OllamaManager(base_url=cfg.get("local_base_url", cfg.get("base_url", OLLAMA_DEFAULT_BASE_URL)))
+        self._model_names = []
         self._build()
 
     def _build(self):
         self._build_ai_page()
+        self._build_local_page()
         self._build_api_page()
         self._build_schedule_page()
         self._build_retention_page()
@@ -61,12 +64,8 @@ class SettingsDialog(Adw.PreferencesWindow):
 
         provider_ids = get_provider_options()
         provider_labels = {
-            "ollama": "Ollama (local)",
-            "openai": "OpenAI-compatible",
-            "anthropic": "Anthropic",
-            "llama_cpp": "llama.cpp",
-            "codex": "Codex",
-            "custom": "Custom provider",
+            "local": "Local",
+            "custom_api": "Custom API",
         }
         if provider not in provider_ids and provider_ids:
             provider = provider_ids[0]
@@ -97,11 +96,95 @@ class SettingsDialog(Adw.PreferencesWindow):
         self._model_row = Adw.ComboRow(title="Default Analysis Model")
         self._model_row.connect("notify::selected", self._on_model_changed)
         grp2.add(self._model_row)
-        self._codex_reasoning_row = Adw.ComboRow(title="Reasoning effort")
-        self._codex_reasoning_row.connect("notify::selected", self._on_reasoning_effort_changed)
-        self._codex_reasoning_row.set_visible(False)
-        grp2.add(self._codex_reasoning_row)
+        self._variant_row = Adw.ComboRow(title="Reasoning level")
+        self._variant_row.connect("notify::selected", self._on_variant_changed)
+        grp2.add(self._variant_row)
+        model_actions_row = Adw.PreferencesRow()
+        model_actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._load_models_btn = Gtk.Button(label="Load available models")
+        self._load_models_btn.connect("clicked", self._on_load_models_clicked)
+        self._models_loader_spinner = Gtk.Spinner()
+        self._models_loader_spinner.set_visible(False)
+        model_actions_box.append(self._load_models_btn)
+        model_actions_box.append(self._models_loader_spinner)
+        model_actions_row.set_child(model_actions_box)
+        grp2.add(model_actions_row)
+
+        depth_list = Gtk.StringList.new(["Brief", "Extended"])
+        depth_row = Adw.ComboRow(title="Default briefing depth")
+        depth_row.set_model(depth_list)
+        depth_row.set_selected(1 if Config.briefing_depth() == "extended" else 0)
+        depth_row.connect("notify::selected", self._on_depth_changed)
+        grp2.add(depth_row)
         page.add(grp2)
+
+    def _build_local_page(self):
+        page = Adw.PreferencesPage(title="Local", icon_name="network-wired-symbolic")
+        self.add(page)
+
+        cfg = Config.llm()
+        local_backend = cfg.get("local_backend", "ollama")
+
+        local_backend_ids = ["ollama", "llama_cpp", "lm_studio"]
+        local_backend_labels = ["Ollama", "llama.cpp", "LM Studio"]
+        self._local_backend_ids = local_backend_ids
+
+        backend_grp = Adw.PreferencesGroup(title="Local backend")
+        backend_row = Adw.ComboRow(title="Backend")
+        backend_list = Gtk.StringList()
+        for label in local_backend_labels:
+            backend_list.append(label)
+        backend_row.set_model(backend_list)
+        for i, b_id in enumerate(local_backend_ids):
+            if b_id == local_backend:
+                backend_row.set_selected(i)
+        backend_row.connect("notify::selected", self._on_local_backend_changed)
+        self._local_backend_row = backend_row
+        backend_grp.add(backend_row)
+        page.add(backend_grp)
+
+        conn_grp = Adw.PreferencesGroup(title="Provider connection")
+        self._local_api_key_row = Adw.PasswordEntryRow(title="API Key")
+        self._local_api_key_row.set_text(cfg.get("local_api_key", ""))
+        self._local_api_key_row.connect("changed", self._on_local_api_key_changed)
+        conn_grp.add(self._local_api_key_row)
+
+        local_url = cfg.get("local_base_url", self._default_base_url_for_mode("local", local_backend=local_backend))
+        self._local_url_row = Adw.EntryRow(title="Endpoint URL")
+        self._local_url_row.set_text(local_url)
+        self._local_url_row.connect("changed", self._on_local_url_changed)
+        conn_grp.add(self._local_url_row)
+
+        self._local_test_btn = Gtk.Button(label="Test connection")
+        self._local_test_btn.set_valign(Gtk.Align.CENTER)
+        self._local_test_btn.connect("clicked", lambda btn: self._on_test_connection(btn, "local"))
+        self._local_url_row.add_suffix(self._local_test_btn)
+        self._ollama_auto_start_row = Adw.SwitchRow(
+            title="Auto-start Ollama",
+            subtitle="Start Ollama when GeoPulse launches (for Ollama backend only)",
+        )
+        ollama_cfg = Config.ollama_config()
+        self._ollama_auto_start_row.set_active(ollama_cfg.get("auto_start", True))
+        self._ollama_auto_start_row.connect(
+            "notify::active",
+            lambda row, _: Config.update(ollama={"auto_start": row.get_active()}),
+        )
+        conn_grp.add(self._ollama_auto_start_row)
+        page.add(conn_grp)
+
+        local_actions = Adw.PreferencesGroup(title="Actions")
+        action_row = Adw.PreferencesRow()
+        action_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        save_btn = Gtk.Button(label="Save")
+        save_btn.add_css_class("suggested-action")
+        save_btn.connect("clicked", self._on_save_local_provider)
+        delete_btn = Gtk.Button(label="Delete")
+        delete_btn.connect("clicked", self._on_delete_local_provider)
+        action_buttons.append(save_btn)
+        action_buttons.append(delete_btn)
+        action_row.set_child(action_buttons)
+        local_actions.add(action_row)
+        page.add(local_actions)
 
     def _build_api_page(self):
         page = Adw.PreferencesPage(title="API", icon_name="network-transmit-signal-symbolic")
@@ -109,7 +192,6 @@ class SettingsDialog(Adw.PreferencesWindow):
 
         cfg = Config.llm()
         backend = cfg.get("custom_backend", "openai")
-        provider = cfg.get("provider", "ollama")
 
         backend_ids = [b for b, _ in CUSTOM_BACKENDS]
         backend_labels = [l for _, l in CUSTOM_BACKENDS]
@@ -132,51 +214,36 @@ class SettingsDialog(Adw.PreferencesWindow):
 
         # API key + endpoint
         conn_grp = Adw.PreferencesGroup(title="Provider connection")
-        self._api_key_row = Adw.EntryRow(title="API Key")
-        self._api_key_row.set_text(cfg.get("api_key", ""))
-        self._api_key_row.connect("changed", self._on_api_key_changed)
+        self._api_key_row = Adw.PasswordEntryRow(title="API Key")
+        self._api_key_row.set_text(cfg.get("custom_api_key", ""))
+        self._api_key_row.connect("changed", self._on_custom_api_key_changed)
         conn_grp.add(self._api_key_row)
-        base_url = cfg.get("base_url", self._default_base_url_for_provider(provider, backend))
+
+        base_url = cfg.get("custom_base_url", self._default_base_url_for_mode("custom_api", custom_backend=backend))
         self._provider_url_row = Adw.EntryRow(title="Endpoint URL")
         self._provider_url_row.set_text(base_url)
-        self._provider_url_row.connect("changed", self._on_provider_url_changed)
+        self._provider_url_row.connect("changed", self._on_custom_url_changed)
         conn_grp.add(self._provider_url_row)
-        self._variant_row = Adw.ComboRow(title="Reasoning level")
-        self._variant_row.connect("notify::selected", self._on_variant_changed)
-        conn_grp.add(self._variant_row)
-        self._test_btn = Gtk.Button(label="Test connection")
-        self._test_btn.set_valign(Gtk.Align.CENTER)
-        self._test_btn.connect("clicked", self._on_test_connection)
-        self._provider_url_row.add_suffix(self._test_btn)
+
+        self._api_test_btn = Gtk.Button(label="Test connection")
+        self._api_test_btn.set_valign(Gtk.Align.CENTER)
+        self._api_test_btn.connect("clicked", lambda btn: self._on_test_connection(btn, "custom_api"))
+        self._provider_url_row.add_suffix(self._api_test_btn)
         page.add(conn_grp)
-        # Briefing depth
-        grp_depth = Adw.PreferencesGroup(
-            title="Briefing depth",
-            description="Default depth for new briefings. Use \"Go deeper\" in a briefing to regenerate with extended depth.",
-        )
-        depth_list = Gtk.StringList.new(["Brief", "Extended"])
-        depth_row = Adw.ComboRow(title="Default depth")
-        depth_row.set_model(depth_list)
-        depth_row.set_selected(1 if Config.briefing_depth() == "extended" else 0)
-        depth_row.connect("notify::selected", self._on_depth_changed)
-        grp_depth.add(depth_row)
-        page.add(grp_depth)
-
-        # Ollama management
-        grp3 = Adw.PreferencesGroup(title="Ollama")
-        ollama_cfg = Config.ollama_config()
-        auto_start = Adw.SwitchRow(
-            title="Auto-start Ollama",
-            subtitle="Start Ollama when GeoPulse launches (for Ollama provider only)",
-        )
-        auto_start.set_active(ollama_cfg.get("auto_start", True))
-        auto_start.connect("notify::active", lambda row, _: Config.update(ollama={"auto_start": row.get_active()}))
-        grp3.add(auto_start)
-        self._ollama_auto_start_row = auto_start
-        page.add(grp3)
-
+        api_actions = Adw.PreferencesGroup(title="Actions")
+        action_row = Adw.PreferencesRow()
+        action_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        save_btn = Gtk.Button(label="Save")
+        save_btn.add_css_class("suggested-action")
+        save_btn.connect("clicked", self._on_save_custom_provider)
+        delete_btn = Gtk.Button(label="Delete")
+        delete_btn.connect("clicked", self._on_delete_custom_provider)
+        action_buttons.append(save_btn)
+        action_buttons.append(delete_btn)
+        action_row.set_child(action_buttons)
+        api_actions.add(action_row)
+        page.add(api_actions)
         self._sync_provider_controls()
-        self._refresh_model_list()
 
     # ── Schedule ──────────────────────────────────────────────────────────────
 
@@ -674,9 +741,17 @@ class SettingsDialog(Adw.PreferencesWindow):
     def _selected_provider(self) -> str:
         idx = self._provider_row.get_selected()
         if idx < 0:
-            return "ollama"
+            return "local"
         try:
-            return self._provider_ids[idx]
+            value = self._provider_ids[idx]
+            return value if value in {"local", "custom_api"} else "local"
+        except Exception:
+            return "local"
+
+    def _selected_local_backend(self) -> str:
+        idx = self._local_backend_row.get_selected()
+        try:
+            return self._local_backend_ids[idx]
         except Exception:
             return "ollama"
 
@@ -687,75 +762,87 @@ class SettingsDialog(Adw.PreferencesWindow):
         except Exception:
             return "openai"
 
-    def _default_base_url_for_provider(self, provider: str, custom_backend: str = "openai") -> str:
-        if provider == "ollama":
+    def _default_base_url_for_mode(
+        self,
+        mode: str,
+        local_backend: str = "ollama",
+        custom_backend: str = "openai",
+    ) -> str:
+        if mode == "local":
+            if local_backend == "llama_cpp":
+                return LLAMA_CPP_DEFAULT_BASE_URL
+            if local_backend == "lm_studio":
+                return LM_STUDIO_DEFAULT_BASE_URL
             return OLLAMA_DEFAULT_BASE_URL
-        if provider == "openai":
-            return OPENAI_DEFAULT_BASE_URL
-        if provider == "anthropic":
-            return ANTHROPIC_DEFAULT_BASE_URL
-        if provider == "llama_cpp":
-            return LLAMA_CPP_DEFAULT_BASE_URL
-        if provider == "codex":
-            return OPENAI_DEFAULT_BASE_URL
         if custom_backend == "anthropic":
             return ANTHROPIC_DEFAULT_BASE_URL
         return OPENAI_DEFAULT_BASE_URL
 
+    def _normalize_base_url(self, url: str) -> str:
+        value = (url or "").strip()
+        if value and not value.startswith(("http://", "https://")):
+            value = "http://" + value
+        return value
+
     def _sync_provider_controls(self):
         provider = self._selected_provider()
         backend = self._selected_custom_backend()
-        is_custom = provider == "custom"
-        uses_openai_options = provider in {"openai", "llama_cpp"} or (provider == "custom" and backend == "openai")
-        self._custom_backend_row.set_visible(is_custom)
-        if is_custom:
-            self._provider_url_row.set_title("API URL")
-        elif provider == "openai":
-            self._provider_url_row.set_title("OpenAI URL")
-        elif provider == "anthropic":
-            self._provider_url_row.set_title("Anthropic URL")
-        elif provider == "llama_cpp":
-            self._provider_url_row.set_title("llama.cpp URL")
-        elif provider == "codex":
-            self._provider_url_row.set_title("Codex URL")
-        else:
-            self._provider_url_row.set_title("Ollama URL")
+        local_backend = self._selected_local_backend()
 
-        expected_url = Config.llm().get("base_url", "")
-        if not expected_url:
-            expected_url = self._default_base_url_for_provider(provider, backend)
-        self._provider_url_row.set_text(expected_url)
-        self._provider_url_row.set_sensitive(True)
+        expected_local_url = Config.llm().get(
+            "local_base_url",
+            self._default_base_url_for_mode("local", local_backend=local_backend),
+        )
+        if not expected_local_url:
+            expected_local_url = self._default_base_url_for_mode("local", local_backend=local_backend)
+        if self._local_url_row.get_text() != expected_local_url:
+            self._local_url_row.set_text(expected_local_url)
+        local_key = Config.llm().get("local_api_key", "")
+        if self._local_api_key_row.get_text() != local_key:
+            self._local_api_key_row.set_text(local_key)
 
-        current_api_key = Config.llm().get("api_key", "")
-        if self._api_key_row.get_text() != current_api_key:
-            self._api_key_row.set_text(current_api_key)
+        expected_custom_url = Config.llm().get(
+            "custom_base_url",
+            self._default_base_url_for_mode("custom_api", custom_backend=backend),
+        )
+        if not expected_custom_url:
+            expected_custom_url = self._default_base_url_for_mode("custom_api", custom_backend=backend)
+        if self._provider_url_row.get_text() != expected_custom_url:
+            self._provider_url_row.set_text(expected_custom_url)
+        custom_key = Config.llm().get("custom_api_key", "")
+        if self._api_key_row.get_text() != custom_key:
+            self._api_key_row.set_text(custom_key)
 
-        # API key not needed for local providers
-        self._api_key_row.set_visible(provider in {"openai", "anthropic", "llama_cpp", "custom"})
-        if provider == "codex":
-            self._api_key_row.set_visible(False)
-        self._variant_row.set_visible(uses_openai_options)
-        self._codex_reasoning_row.set_visible(provider == "codex")
+        self._custom_backend_row.set_visible(provider == "custom_api")
         self._refresh_reasoning_level_rows_for_model()
+        self._apply_model_list([])
+
         if self._ollama_auto_start_row:
-            self._ollama_auto_start_row.set_visible(provider == "ollama")
+            self._ollama_auto_start_row.set_visible(provider == "local" and local_backend == "ollama")
+        if provider == "local":
+            self._ollama = OllamaManager(base_url=expected_local_url)
 
-        self._refresh_model_list()
-
-    def _provider_config_for_row(self) -> dict:
+    def _provider_config_for_row(self, mode: str = None) -> dict:
         cfg = dict(Config.llm())
-        provider = self._selected_provider()
-        backend = self._selected_custom_backend()
+        provider = mode or self._selected_provider()
+        local_backend = self._selected_local_backend()
+        custom_backend = self._selected_custom_backend()
         cfg["provider"] = provider
-        cfg["custom_backend"] = backend
+        cfg["custom_backend"] = custom_backend
+        cfg["local_base_url"] = self._normalize_base_url(self._local_url_row.get_text())
+        cfg["local_api_key"] = self._local_api_key_row.get_text()
+        cfg["custom_base_url"] = self._normalize_base_url(self._provider_url_row.get_text())
+        cfg["custom_api_key"] = self._api_key_row.get_text()
+        cfg["local_backend"] = local_backend
         cfg["variant"] = self._combo_value(self._variant_row).strip()
-        cfg["reasoningEffort"] = self._selected_reasoning_effort().strip()
+        cfg["model_variant"] = self._combo_value(self._variant_row).strip()
+        cfg["reasoningEffort"] = self._combo_value(self._variant_row).strip()
+        cfg["reasoning_effort"] = self._combo_value(self._variant_row).strip()
         return cfg
 
     def _apply_model_list(self, names):
-        if not names:
-            names = [Config.llm().get("model", "qwen3:8b")]
+        if not isinstance(names, (list, tuple)):
+            names = []
         # de-duplicate while preserving order
         seen = set()
         names = [n for n in names if isinstance(n, str) and not (n in seen or seen.add(n))]
@@ -765,7 +852,16 @@ class SettingsDialog(Adw.PreferencesWindow):
         for name in names:
             model_list.append(name)
         self._model_row.set_model(model_list)
-        configured_model = Config.llm().get("model", "qwen3:8b")
+        self._model_row.set_sensitive(bool(names))
+        if not names:
+            try:
+                self._model_row.set_selected(-1)
+            except Exception:
+                pass
+            self._refresh_reasoning_level_rows_for_model()
+            return
+
+        configured_model = Config.llm().get("model", "").strip()
         if configured_model in names:
             self._model_row.set_selected(names.index(configured_model))
         else:
@@ -774,26 +870,40 @@ class SettingsDialog(Adw.PreferencesWindow):
         self._refresh_reasoning_level_rows_for_model()
 
     def _refresh_model_list(self):
+        self._set_models_loading(True)
         cfg = self._provider_config_for_row()
+        GLib.idle_add(self._apply_model_list, [])
 
         def _load():
-            model_names = [cfg.get("model", "qwen3:8b")]
+            model_names = []
+            error = None
             try:
-                if cfg.get("provider") == "codex":
-                    from providers.codex import get_codex_cached_models
-
-                    cached = get_codex_cached_models()
-                    if cached:
-                        model_names = cached
-                        GLib.idle_add(self._apply_model_list, model_names)
-                        return
                 provider = create_provider(cfg)
                 model_names = provider.list_models()
             except Exception as exc:
                 logger.debug("Model discovery failed: %s", exc)
-            GLib.idle_add(self._apply_model_list, model_names)
+                error = str(exc)
+            GLib.idle_add(self._on_model_list_ready, model_names, error)
 
         threading.Thread(target=_load, daemon=True).start()
+
+    def _on_model_list_ready(self, model_names, error_msg=None):
+        if not isinstance(model_names, (list, tuple)):
+            model_names = []
+        self._apply_model_list(list(model_names))
+        self._set_models_loading(False)
+        if error_msg:
+            self.add_toast(Adw.Toast(title=f"Failed to load models: {error_msg}"))
+            return
+        if not model_names:
+            self.add_toast(Adw.Toast(title="No models were returned from the selected provider"))
+
+    def _set_models_loading(self, loading: bool):
+        if self._models_loader_spinner:
+            self._models_loader_spinner.set_visible(loading)
+            self._models_loader_spinner.set_spinning(loading)
+        if self._load_models_btn:
+            self._load_models_btn.set_sensitive(not loading)
 
     def _on_provider_changed(self, row, _):
         idx = row.get_selected()
@@ -802,10 +912,40 @@ class SettingsDialog(Adw.PreferencesWindow):
             Config.update(llm={"provider": providers[idx]})
             self._sync_provider_controls()
 
+    def _on_local_backend_changed(self, row, _):
+        idx = row.get_selected()
+        if idx >= len(self._local_backend_ids):
+            return
+
+        backend = self._local_backend_ids[idx]
+        cfg = Config.llm()
+        old_backend = cfg.get("local_backend", "ollama")
+        old_url = cfg.get("local_base_url", "")
+        default_old = self._default_base_url_for_mode("local", local_backend=old_backend)
+        default_new = self._default_base_url_for_mode("local", local_backend=backend)
+        url = old_url
+        if not url or url == default_old:
+            url = default_new
+        Config.update(llm={"local_backend": backend, "local_base_url": url})
+        if self._local_url_row.get_text() != url:
+            self._local_url_row.set_text(url)
+        self._sync_provider_controls()
+
     def _on_custom_backend_changed(self, row, _):
         idx = row.get_selected()
         if idx < len(self._custom_backend_ids):
-            Config.update(llm={"custom_backend": self._custom_backend_ids[idx]})
+            cfg = Config.llm()
+            backend = self._custom_backend_ids[idx]
+            old_backend = cfg.get("custom_backend", "openai")
+            old_url = cfg.get("custom_base_url", "")
+            default_old = self._default_base_url_for_mode("custom_api", custom_backend=old_backend)
+            default_new = self._default_base_url_for_mode("custom_api", custom_backend=backend)
+            url = old_url
+            if not url or url == default_old:
+                url = default_new
+            Config.update(llm={"custom_backend": backend, "custom_base_url": url})
+            if self._provider_url_row.get_text() != url:
+                self._provider_url_row.set_text(url)
             self._sync_provider_controls()
 
     def _on_model_changed(self, row, _):
@@ -814,17 +954,78 @@ class SettingsDialog(Adw.PreferencesWindow):
             Config.update(llm={"model": self._model_names[idx]})
             self._refresh_reasoning_level_rows_for_model()
 
-    def _on_api_key_changed(self, row):
-        Config.update(llm={"api_key": row.get_text()})
+    def _on_local_api_key_changed(self, row):
+        Config.update(llm={"local_api_key": row.get_text()})
+
+    def _on_custom_api_key_changed(self, row):
+        Config.update(llm={"custom_api_key": row.get_text()})
+
+    def _on_local_url_changed(self, row):
+        value = self._normalize_base_url(row.get_text())
+        if value != row.get_text():
+            row.set_text(value)
+        Config.update(llm={"local_base_url": value})
+        if self._selected_provider() == "local":
+            self._ollama = OllamaManager(base_url=value)
+
+    def _on_custom_url_changed(self, row):
+        value = self._normalize_base_url(row.get_text())
+        if value != row.get_text():
+            row.set_text(value)
+        Config.update(llm={"custom_base_url": value})
+
+    def _on_save_local_provider(self, _):
+        value = self._normalize_base_url(self._local_url_row.get_text())
+        if value != self._local_url_row.get_text():
+            self._local_url_row.set_text(value)
+        Config.update(
+            llm={
+                "local_backend": self._selected_local_backend(),
+                "local_base_url": value,
+                "local_api_key": self._local_api_key_row.get_text(),
+            }
+        )
+        if self._selected_provider() == "local":
+            self._sync_provider_controls()
+        self.add_toast(Adw.Toast(title="Local provider saved"))
+
+    def _on_delete_local_provider(self, _):
+        self._local_url_row.set_text("")
+        self._local_api_key_row.set_text("")
+        Config.update(llm={"local_base_url": "", "local_api_key": ""})
+        if self._selected_provider() == "local":
+            self._sync_provider_controls()
+        self.add_toast(Adw.Toast(title="Local provider cleared"))
+
+    def _on_save_custom_provider(self, _):
+        value = self._normalize_base_url(self._provider_url_row.get_text())
+        if value != self._provider_url_row.get_text():
+            self._provider_url_row.set_text(value)
+        Config.update(
+            llm={
+                "custom_backend": self._selected_custom_backend(),
+                "custom_base_url": value,
+                "custom_api_key": self._api_key_row.get_text(),
+            }
+        )
+        if self._selected_provider() == "custom_api":
+            self._sync_provider_controls()
+        self.add_toast(Adw.Toast(title="Custom API saved"))
+
+    def _on_delete_custom_provider(self, _):
+        self._provider_url_row.set_text("")
+        self._api_key_row.set_text("")
+        Config.update(llm={"custom_base_url": "", "custom_api_key": ""})
+        if self._selected_provider() == "custom_api":
+            self._sync_provider_controls()
+        self.add_toast(Adw.Toast(title="Custom API cleared"))
+
+    def _on_load_models_clicked(self, _):
         self._refresh_model_list()
 
-    def _on_variant_changed(self, row):
+    def _on_variant_changed(self, row, *_param):
         value = self._combo_value(row).strip()
         Config.update(llm={"variant": value, "model_variant": value})
-        self._refresh_model_list()
-
-    def _on_reasoning_effort_changed(self, row):
-        value = self._combo_value(row).strip()
         Config.update(llm={"reasoningEffort": value, "reasoning_effort": value})
 
     def _selected_model(self) -> str:
@@ -835,10 +1036,9 @@ class SettingsDialog(Adw.PreferencesWindow):
             return ""
 
     def _reasoning_level_options(self, provider: str, model_slug: str) -> list:
-        if provider == "codex":
-            levels = get_codex_model_reasoning_levels(model_slug)
-            if levels:
-                return levels
+        provider = provider or ""
+        if provider in {"custom_api", "local"}:
+            return REASONING_LEVEL_FALLBACKS
         return REASONING_LEVEL_FALLBACKS
 
     def _combo_value(self, row) -> str:
@@ -879,44 +1079,31 @@ class SettingsDialog(Adw.PreferencesWindow):
         else:
             row.set_selected(0)
 
-    def _selected_reasoning_effort(self) -> str:
-        if self._selected_provider() == "codex":
-            return self._combo_value(self._codex_reasoning_row)
-        return self._combo_value(self._variant_row)
-
     def _refresh_reasoning_level_rows_for_model(self):
         cfg = Config.llm()
-        model = self._selected_model() or cfg.get("model", "qwen3:8b")
-        provider = self._selected_provider()
-        backend = self._selected_custom_backend()
-        uses_openai_options = provider in {"openai", "llama_cpp"} or (provider == "custom" and backend == "openai")
-        reasoning_values = self._reasoning_level_options(provider, model)
-
-        if provider == "codex":
-            selected_reasoning = cfg.get("reasoningEffort", cfg.get("reasoning_effort", ""))
-            self._combo_with_options(self._codex_reasoning_row, reasoning_values, selected_reasoning)
+        if not self._model_names:
+            self._variant_row.set_sensitive(False)
+            self._variant_row.set_visible(True)
+            selected_variant = cfg.get("variant", cfg.get("model_variant", ""))
+            reasoning_values = self._reasoning_level_options(self._selected_provider(), "")
+            self._combo_with_options(self._variant_row, reasoning_values, selected_variant)
             return
 
-        if uses_openai_options:
-            selected_variant = cfg.get("variant", cfg.get("model_variant", ""))
-            self._combo_with_options(self._variant_row, reasoning_values, selected_variant)
+        model = self._selected_model() or cfg.get("model", "")
+        provider = self._selected_provider()
+        reasoning_values = self._reasoning_level_options(provider, model)
+
+        self._variant_row.set_visible(True)
+        self._variant_row.set_sensitive(True)
+        selected_variant = cfg.get("variant", cfg.get("model_variant", ""))
+        self._combo_with_options(self._variant_row, reasoning_values, selected_variant)
 
     def _on_depth_changed(self, row, _param):
         depth = "extended" if row.get_selected() == 1 else "brief"
         Config.update(briefing={"depth": depth})
 
-    def _on_provider_url_changed(self, row):
-        provider = self._selected_provider()
-        backend = self._selected_custom_backend()
-        url = (row.get_text() or "").strip() or self._default_base_url_for_provider(provider, backend)
-        if not url.startswith(("http://", "https://")):
-            url = "http://" + url
-        Config.update(llm={"base_url": url})
-        self._ollama = OllamaManager(base_url=url)
-        self._refresh_model_list()
-
-    def _on_test_connection(self, btn):
-        provider_cfg = self._provider_config_for_row()
+    def _on_test_connection(self, btn, mode: str = None):
+        provider_cfg = self._provider_config_for_row(mode)
         try:
             provider = create_provider(provider_cfg)
             provider.list_models()

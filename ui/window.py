@@ -14,7 +14,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 logger = logging.getLogger(__name__)
 
 import storage.database as db
-from storage.config import Config, is_first_run, load_default_topics, ensure_dirs
+from storage.config import (
+    Config,
+    OLLAMA_DEFAULT_BASE_URL,
+    is_first_run,
+    load_default_topics,
+    ensure_dirs,
+)
 from providers import create_provider
 from ollama_manager import OllamaManager
 from scraping.scheduler import SmartScheduler
@@ -166,7 +172,8 @@ class GeoPulseWindow(Adw.ApplicationWindow):
         self._open_briefing_id = open_briefing_id
         self._briefing_rows = {}
         self._scheduler = None
-        self._ollama = OllamaManager(base_url=Config.llm().get("base_url", "http://localhost:11434"))
+        cfg = Config.llm()
+        self._ollama = OllamaManager(base_url=cfg.get("local_base_url", cfg.get("base_url", OLLAMA_DEFAULT_BASE_URL)))
         self._ai_thinking = False
         self._last_updated_iso = None
         self._context_menu_briefing_id = None
@@ -524,8 +531,12 @@ class GeoPulseWindow(Adw.ApplicationWindow):
 
     def _start_scheduler(self):
         ollama_cfg = Config.ollama_config()
+        llm_cfg = Config.llm()
+        provider = llm_cfg.get("provider", "local")
+        local_backend = llm_cfg.get("local_backend", "ollama")
         if (
-            Config.llm().get("provider", "ollama") == "ollama"
+            provider == "local"
+            and local_backend == "ollama"
             and ollama_cfg.get("auto_start")
             and not self._ollama.is_running()
         ):
@@ -558,7 +569,8 @@ class GeoPulseWindow(Adw.ApplicationWindow):
     def _detect_active_model(self):
         """Use whatever model is already loaded in Ollama; only fall back to the
         configured default when nothing is running."""
-        if Config.llm().get("provider") != "ollama":
+        llm_cfg = Config.llm()
+        if llm_cfg.get("provider", "local") != "local" or llm_cfg.get("local_backend", "ollama") != "ollama":
             return
         running = self._ollama.get_running_models()
         if not running:
@@ -571,12 +583,13 @@ class GeoPulseWindow(Adw.ApplicationWindow):
 
     def _update_ai_indicator(self):
         llm_cfg = Config.llm()
-        provider = llm_cfg.get("provider", "ollama")
+        provider = llm_cfg.get("provider", "local")
+        local_backend = llm_cfg.get("local_backend", "ollama")
 
         for cls in ("ai-dot-idle", "ai-dot-online", "ai-dot-offline", "ai-dot-thinking"):
             self._ai_dot.remove_css_class(cls)
 
-        if provider == "ollama":
+        if provider == "local" and local_backend == "ollama":
             self._ai_dot.set_from_icon_name("media-record-symbolic")
             if self._ollama.is_running():
                 self._ai_dot.add_css_class("ai-dot-online")

@@ -30,6 +30,7 @@ class CustomProvider(LLMProvider):
                 variant=variant,
                 reasoning_effort=reasoning_effort,
                 temperature=temperature,
+                fallback_to_codex_cache=False,
             )
         else:
             self._provider = AnthropicProvider(
