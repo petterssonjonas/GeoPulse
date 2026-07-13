@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 CODEX_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CODEX_MODELS_CACHE = Path.home() / ".codex" / "models_cache.json"
+REASONING_LEVEL_FALLBACKS = ["none", "low", "medium", "high", "xhigh"]
 
 
 def get_codex_access_token(auth_path: Path = CODEX_AUTH_PATH) -> str:
@@ -86,3 +87,52 @@ def get_codex_model_reasoning_level(model_slug: str, cache_path: Optional[Path] 
     except Exception as exc:
         logger.debug("Failed reading Codex model reason level: %s", exc)
     return ""
+
+
+def get_codex_model_reasoning_levels(model_slug: str, cache_path: Optional[Path] = None) -> List[str]:
+    """Return supported reasoning levels for a Codex model slug."""
+    model_slug = (model_slug or "").strip()
+    if not model_slug:
+        return []
+
+    cache_file = cache_path or CODEX_MODELS_CACHE
+    try:
+        with open(cache_file, encoding="utf-8") as f:
+            data = json.load(f)
+
+        models = data.get("models", []) if isinstance(data, dict) else []
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            if model.get("slug") != model_slug:
+                continue
+
+            raw_levels = model.get("supported_reasoning_levels", [])
+            if not isinstance(raw_levels, list):
+                break
+
+            levels = []
+            for entry in raw_levels:
+                level = None
+                if isinstance(entry, str):
+                    level = entry
+                elif isinstance(entry, dict):
+                    level = (
+                        entry.get("effort")
+                        or entry.get("level")
+                        or entry.get("name")
+                        or entry.get("value")
+                    )
+                if not isinstance(level, str):
+                    continue
+                level = level.strip()
+                if level and level not in levels:
+                    levels.append(level)
+
+            if levels:
+                return levels
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        logger.debug("Failed reading Codex model reasoning levels: %s", exc)
+    return []

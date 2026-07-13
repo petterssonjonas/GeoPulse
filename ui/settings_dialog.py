@@ -17,10 +17,12 @@ from storage.config import (
     BRIEFING_FONT_SIZE_DEFAULT,
 )
 from providers import create_provider, get_provider_options, CUSTOM_BACKENDS
+from providers.codex import get_codex_model_reasoning_levels
 from ollama_manager import OllamaManager
 import storage.database as db
 from analysis.briefing import PROMPTS_META, get_prompt, get_default_prompt
 
+REASONING_LEVEL_FALLBACKS = ["none", "low", "medium", "high", "xhigh"]
 logger = logging.getLogger(__name__)
 
 
@@ -95,6 +97,10 @@ class SettingsDialog(Adw.PreferencesWindow):
         self._model_row = Adw.ComboRow(title="Default Analysis Model")
         self._model_row.connect("notify::selected", self._on_model_changed)
         grp2.add(self._model_row)
+        self._codex_reasoning_row = Adw.ComboRow(title="Reasoning effort")
+        self._codex_reasoning_row.connect("notify::selected", self._on_reasoning_effort_changed)
+        self._codex_reasoning_row.set_visible(False)
+        grp2.add(self._codex_reasoning_row)
         page.add(grp2)
 
     def _build_api_page(self):
@@ -135,14 +141,9 @@ class SettingsDialog(Adw.PreferencesWindow):
         self._provider_url_row.set_text(base_url)
         self._provider_url_row.connect("changed", self._on_provider_url_changed)
         conn_grp.add(self._provider_url_row)
-        self._variant_row = Adw.EntryRow(title="Variant")
-        self._variant_row.set_text(cfg.get("variant", cfg.get("model_variant", "")))
-        self._variant_row.connect("changed", self._on_variant_changed)
+        self._variant_row = Adw.ComboRow(title="Reasoning level")
+        self._variant_row.connect("notify::selected", self._on_variant_changed)
         conn_grp.add(self._variant_row)
-        self._reasoning_effort_row = Adw.EntryRow(title="Reasoning effort")
-        self._reasoning_effort_row.set_text(cfg.get("reasoningEffort", cfg.get("reasoning_effort", "")))
-        self._reasoning_effort_row.connect("changed", self._on_reasoning_effort_changed)
-        conn_grp.add(self._reasoning_effort_row)
         self._test_btn = Gtk.Button(label="Test connection")
         self._test_btn.set_valign(Gtk.Align.CENTER)
         self._test_btn.connect("clicked", self._on_test_connection)
@@ -705,7 +706,7 @@ class SettingsDialog(Adw.PreferencesWindow):
         provider = self._selected_provider()
         backend = self._selected_custom_backend()
         is_custom = provider == "custom"
-        uses_openai_options = provider in {"openai", "llama_cpp", "codex"} or (provider == "custom" and backend == "openai")
+        uses_openai_options = provider in {"openai", "llama_cpp"} or (provider == "custom" and backend == "openai")
         self._custom_backend_row.set_visible(is_custom)
         if is_custom:
             self._provider_url_row.set_title("API URL")
@@ -735,15 +736,8 @@ class SettingsDialog(Adw.PreferencesWindow):
         if provider == "codex":
             self._api_key_row.set_visible(False)
         self._variant_row.set_visible(uses_openai_options)
-        self._reasoning_effort_row.set_visible(uses_openai_options)
-        if uses_openai_options:
-            cfg = Config.llm()
-            variant = cfg.get("variant", cfg.get("model_variant", ""))
-            if self._variant_row.get_text() != variant:
-                self._variant_row.set_text(variant)
-            reasoning_effort = cfg.get("reasoningEffort", cfg.get("reasoning_effort", ""))
-            if self._reasoning_effort_row.get_text() != reasoning_effort:
-                self._reasoning_effort_row.set_text(reasoning_effort)
+        self._codex_reasoning_row.set_visible(provider == "codex")
+        self._refresh_reasoning_level_rows_for_model()
         if self._ollama_auto_start_row:
             self._ollama_auto_start_row.set_visible(provider == "ollama")
 
@@ -755,8 +749,8 @@ class SettingsDialog(Adw.PreferencesWindow):
         backend = self._selected_custom_backend()
         cfg["provider"] = provider
         cfg["custom_backend"] = backend
-        cfg["variant"] = self._variant_row.get_text().strip()
-        cfg["reasoningEffort"] = self._reasoning_effort_row.get_text().strip()
+        cfg["variant"] = self._combo_value(self._variant_row).strip()
+        cfg["reasoningEffort"] = self._selected_reasoning_effort().strip()
         return cfg
 
     def _apply_model_list(self, names):
@@ -777,6 +771,7 @@ class SettingsDialog(Adw.PreferencesWindow):
         else:
             Config.update(llm={"model": names[0]})
             self._model_row.set_selected(0)
+        self._refresh_reasoning_level_rows_for_model()
 
     def _refresh_model_list(self):
         cfg = self._provider_config_for_row()
@@ -817,17 +812,94 @@ class SettingsDialog(Adw.PreferencesWindow):
         idx = row.get_selected()
         if idx < len(self._model_names):
             Config.update(llm={"model": self._model_names[idx]})
+            self._refresh_reasoning_level_rows_for_model()
 
     def _on_api_key_changed(self, row):
         Config.update(llm={"api_key": row.get_text()})
         self._refresh_model_list()
 
     def _on_variant_changed(self, row):
-        Config.update(llm={"variant": row.get_text().strip(), "model_variant": row.get_text().strip()})
+        value = self._combo_value(row).strip()
+        Config.update(llm={"variant": value, "model_variant": value})
         self._refresh_model_list()
 
     def _on_reasoning_effort_changed(self, row):
-        Config.update(llm={"reasoningEffort": row.get_text().strip(), "reasoning_effort": row.get_text().strip()})
+        value = self._combo_value(row).strip()
+        Config.update(llm={"reasoningEffort": value, "reasoning_effort": value})
+
+    def _selected_model(self) -> str:
+        idx = self._model_row.get_selected()
+        try:
+            return self._model_names[idx]
+        except Exception:
+            return ""
+
+    def _reasoning_level_options(self, provider: str, model_slug: str) -> list:
+        if provider == "codex":
+            levels = get_codex_model_reasoning_levels(model_slug)
+            if levels:
+                return levels
+        return REASONING_LEVEL_FALLBACKS
+
+    def _combo_value(self, row) -> str:
+        selected = row.get_selected_item()
+        try:
+            return selected.get_string()
+        except Exception:
+            return ""
+
+    def _combo_with_options(self, row, options, selected_value=""):
+        if not options:
+            options = REASONING_LEVEL_FALLBACKS
+
+        values = []
+        seen = set()
+        for option in options:
+            if not isinstance(option, str):
+                continue
+            option = option.strip()
+            if option and option not in seen:
+                values.append(option)
+                seen.add(option)
+        if not values:
+            values = REASONING_LEVEL_FALLBACKS.copy()
+            seen = set(values)
+
+        selected_value = (selected_value or "").strip()
+        if selected_value and selected_value not in seen:
+            values.append(selected_value)
+            seen.add(selected_value)
+
+        model = Gtk.StringList()
+        for value in values:
+            model.append(value)
+        row.set_model(model)
+        if selected_value in values:
+            row.set_selected(values.index(selected_value))
+        else:
+            row.set_selected(0)
+
+    def _selected_reasoning_effort(self) -> str:
+        if self._selected_provider() == "codex":
+            return self._combo_value(self._codex_reasoning_row)
+        return self._combo_value(self._variant_row)
+
+    def _refresh_reasoning_level_rows_for_model(self):
+        cfg = Config.llm()
+        model = self._selected_model() or cfg.get("model", "qwen3:8b")
+        provider = self._selected_provider()
+        backend = self._selected_custom_backend()
+        uses_openai_options = provider in {"openai", "llama_cpp"} or (provider == "custom" and backend == "openai")
+        reasoning_values = self._reasoning_level_options(provider, model)
+
+        if provider == "codex":
+            selected_reasoning = cfg.get("reasoningEffort", cfg.get("reasoning_effort", ""))
+            self._combo_with_options(self._codex_reasoning_row, reasoning_values, selected_reasoning)
+            return
+
+        if uses_openai_options:
+            selected_variant = cfg.get("variant", cfg.get("model_variant", ""))
+            self._combo_with_options(self._variant_row, reasoning_values, selected_variant)
 
     def _on_depth_changed(self, row, _param):
         depth = "extended" if row.get_selected() == 1 else "brief"

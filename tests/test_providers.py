@@ -9,7 +9,7 @@ from providers import create_provider, get_provider_options
 from providers.custom import CustomProvider
 from providers.openai_compat import OpenAIProvider
 from providers.anthropic import AnthropicProvider
-from providers.codex import get_codex_cached_models, get_codex_model_reasoning_level
+from providers.codex import get_codex_cached_models, get_codex_model_reasoning_level, get_codex_model_reasoning_levels
 
 
 class ProviderFactoryTests(unittest.TestCase):
@@ -163,6 +163,31 @@ class CodexCacheTests(unittest.TestCase):
             with patch("providers.codex.CODEX_MODELS_CACHE", cache_path):
                 self.assertEqual(get_codex_model_reasoning_level("gpt-2"), "high")
                 self.assertEqual(get_codex_model_reasoning_level("missing"), "")
+
+    def test_get_codex_model_reasoning_levels(self):
+        payload = {
+            "models": [
+                {
+                    "slug": "gpt-5.6-sol",
+                    "supported_reasoning_levels": [
+                        {"effort": "low"},
+                        {"effort": "medium"},
+                        {"effort": "high"},
+                    ],
+                },
+                {
+                    "slug": "gpt-3",
+                    "supported_reasoning_levels": ["none", "xhigh"],
+                },
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "models_cache.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch("providers.codex.CODEX_MODELS_CACHE", cache_path):
+                self.assertEqual(get_codex_model_reasoning_levels("gpt-5.6-sol"), ["low", "medium", "high"])
+                self.assertEqual(get_codex_model_reasoning_levels("gpt-3"), ["none", "xhigh"])
+                self.assertEqual(get_codex_model_reasoning_levels("missing"), [])
 
 
 if __name__ == "__main__":
