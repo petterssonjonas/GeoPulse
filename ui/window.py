@@ -195,10 +195,8 @@ class GeoPulseWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._start_scheduler)
 
     def _on_close(self, _window):
-        if self._scheduler:
-            self._scheduler.stop()
-        self.get_application().quit()
-        return False
+        self.set_visible(False)
+        return True
 
     def _build_ui(self):
         self._toast_overlay = Adw.ToastOverlay()

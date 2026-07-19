@@ -108,7 +108,7 @@ class GeoPulseApp(Adw.Application):
             self._window.refresh_header()
 
     def _on_activate(self, app):
-        if self._window and self._window.is_visible():
+        if self._window:
             self._window.present()
             return
 

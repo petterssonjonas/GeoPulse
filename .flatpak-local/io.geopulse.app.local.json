@@ -1,0 +1,43 @@
+{
+  "id": "io.geopulse.app",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "46",
+  "sdk": "org.gnome.Sdk",
+  "command": "geopulse",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=x11",
+    "--socket=pulseaudio",
+    "--device=dri",
+    "--share=network",
+    "--env=PYTHONPATH=/app/share/geopulse"
+  ],
+  "modules": [
+    {
+      "name": "geopulse",
+      "buildsystem": "simple",
+      "build-options": {
+        "build-args": [
+          "--share=network"
+        ]
+      },
+      "sources": [
+        {
+          "type": "dir",
+          "path": "/home/jp/Code/geopulse"
+        }
+      ],
+      "build-commands": [
+        "PIP_NO_CACHE_DIR=1 PIP_IGNORE_INSTALLED=1 pip3 install --prefix=/app -r requirements.txt",
+        "mkdir -p /app/share/geopulse",
+        "mkdir -p /app/share/applications /app/share/icons/hicolor/256x256/apps",
+        "cp -r . /app/share/geopulse/",
+        "install -Dm755 packaging/flatpak-run.sh /app/bin/geopulse",
+        "install -Dm644 packaging/io.geopulse.app.desktop /app/share/applications/io.geopulse.app.desktop",
+        "install -Dm644 packaging/io.geopulse.app.png /app/share/icons/256x256/apps/io.geopulse.app.png"
+      ]
+    }
+  ]
+}
+

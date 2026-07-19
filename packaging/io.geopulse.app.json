@@ -26,14 +26,18 @@
         {
           "type": "archive",
           "url": "https://github.com/petterssonjonas/GeoPulse/archive/refs/tags/v0.91.0.tar.gz",
-          "dest-filename": "geopulse-0.91.0.tar.gz"
+          "dest-filename": "geopulse-0.91.0.tar.gz",
+          "sha256": "8f271cabae2829b0d277e6f805245af609dbc688c9af5bd6e5d9d02a7da52991"
         }
       ],
       "build-commands": [
-        "pip3 install --prefix=/app -r requirements.txt",
+        "PIP_NO_CACHE_DIR=1 PIP_IGNORE_INSTALLED=1 pip3 install --prefix=/app -r requirements.txt",
         "mkdir -p /app/share/geopulse",
+        "mkdir -p /app/share/applications /app/share/icons/hicolor/256x256/apps",
         "cp -r . /app/share/geopulse/",
-        "install -Dm755 packaging/flatpak-run.sh /app/bin/geopulse"
+        "install -Dm755 packaging/flatpak-run.sh /app/bin/geopulse",
+        "install -Dm644 packaging/io.geopulse.app.desktop /app/share/applications/io.geopulse.app.desktop",
+        "install -Dm644 packaging/io.geopulse.app.png /app/share/icons/256x256/apps/io.geopulse.app.png"
       ]
     }
   ]

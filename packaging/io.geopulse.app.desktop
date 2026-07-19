@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=GeoPulse
+GenericName=News Intelligence
+Comment=Monitor geopolitical news and run AI briefings in the background
+Exec=geopulse
+Icon=io.geopulse.app
+Terminal=false
+Categories=GNOME;Utility;Network;
+StartupNotify=true
+X-GNOME-UsesNotifications=true
